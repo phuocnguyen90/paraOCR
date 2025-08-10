@@ -38,7 +38,7 @@ def collect_tasks(config: OCRConfig) -> list[OCRTask]:
 def run_pipeline(config: OCRConfig):
     """
     The main workhorse function. It takes a config object and runs the entire pipeline.
-    This can be called directly from other Python scripts, like our Colab notebook.
+    This can be called directly from other Python scripts.
     """
     config.temp_dir.mkdir(parents=True, exist_ok=True)
     config.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,8 +74,7 @@ def main():
     parser.add_argument("--ignore-keyword", action='append', dest='ignore_keywords', help="A keyword in a filename to ignore (can be used multiple times).")
     parser.add_argument("--force-rerun", action='store_true', help="Force reprocessing of all files, ignoring previous results.")
     parser.add_argument("--error-log-path", type=Path, help="Path to save the error log JSONL file.")
-    parser.add_argument("--pdf-engine", type=str, default="pymupdf", choices=["pymupdf"],
-                        help="The underlying engine to use for PDF processing.") 
+    parser.add_argument("--pdf-engine", type=str, default="pymupdf", choices=["pymupdf"], help="The underlying engine to use for PDF processing.") 
     parser.add_argument("--export-txt", action='store_true', help="Also export a discrete .txt file for each document in its source directory.")
     perf_group = parser.add_argument_group('Performance Logging')
     perf_group.add_argument("--log-performance", action='store_true', help="Enable detailed performance logging to a file.")
