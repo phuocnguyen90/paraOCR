@@ -5,8 +5,8 @@ this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
-    name="paraOCR",
-    version="1.0.1",
+    name="paraocr",
+    version="2.0.1",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
     author="Phuoc Nguyen",
@@ -15,7 +15,7 @@ setup(
     long_description_content_type='text/markdown',
 
     package_data={
-        "paraOCR": ["*.txt"], 
+        "paraocr": ["vi_full.txt"], 
     },
     include_package_data=True,
 
@@ -31,7 +31,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'paraOCR=paraOCR.cli:main',
+            'paraocr=paraocr.cli:main',
         ],
     },
 )
