@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Set
 from slugify import slugify
+import pkg_resources
 
 def load_processed_ids(output_path: Path) -> Set[str]:
     """
@@ -23,40 +24,51 @@ def load_processed_ids(output_path: Path) -> Set[str]:
                 continue
     return processed_paths
 
-def load_dictionary(dict_path: Path) -> Set[str]:
-    """Loads a dictionary of common words for quality checking."""
-    if not dict_path.exists():
-        # It's better to raise an error if a critical file is missing
-        # or handle it gracefully in the CLI. For now, we'll print a warning.
-        print(f"[Warning] Dictionary file not found at '{dict_path}'. Text quality check will be disabled.")
+def load_dictionary() -> Set[str]:
+    """
+    Loads the comprehensive Vietnamese dictionary that is packaged with the library.
+    """
+    try:
+        # This safely finds the path to the data file even after the package is installed
+        filepath = pkg_resources.resource_filename('powerocr', 'vi_full.txt')
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return {line.strip().lower() for line in f if line.strip()}
+    except (FileNotFoundError, ModuleNotFoundError):
+        print("[Warning] Comprehensive dictionary 'vi_full.txt' not found. Text quality check will be degraded.")
         return set()
-    with open(dict_path, 'r', encoding='utf-8') as f:
-        # Use a set for fast 'in' lookups
-        return {line.strip().lower() for line in f if line.strip()}
 
 # --- THIS IS THE MISSING FUNCTION ---
 def is_native_text_good_quality(text: str, dictionary: Set[str], threshold: float) -> bool:
     """
-    Checks if the extracted native text is likely real human language or scanner garbage.
-    It calculates the ratio of words in the text that are also present in the dictionary.
+    Performs a two-stage heuristic check to validate the quality of extracted native text.
     """
-    # If no dictionary is provided, we can't perform the check, so we optimistically return True.
-    if not dictionary:
-        return True
-        
-    words = text.lower().split()
-    
-    # If there are very few words, it's hard to judge quality, so we can be lenient.
-    if len(words) < 5:
-        return True
+    if not text:
+        return False
 
-    # Count how many of the words in the text are found in our dictionary
-    in_dict_count = sum(1 for word in words if word in dictionary)
+    # --- Stage 1: Character Script Analysis (Fast Check) ---
+    # Define the set of characters we expect in Vietnamese/Latin script
+    # This includes basic Latin alphabet, numbers, common punctuation, and Vietnamese-specific characters.
+    vietnamese_chars = "aáàảãạăắằẳẵặâấầẩẫậbcdđeéèẻẽẹêếềểễệfghiíìỉĩịjklmnoóòỏõọôốồổỗộơớờởỡợpqrstuúùủũụưứừửữựvwxyýỳỷỹỵz"
+    valid_chars = set(vietnamese_chars + vietnamese_chars.upper() + "0123456789 .,;:!?-()[]{}'\"")
     
-    # Calculate the ratio
+    total_chars = len(text)
+    valid_char_count = sum(1 for char in text if char in valid_chars or char.isspace())
+    
+    # If less than 85% of characters are valid (or whitespace), it's likely garbage.
+    if (valid_char_count / total_chars) < 0.85:
+        return False # Fails the fast check
+
+    # --- Stage 2: Comprehensive Dictionary Check (Slower, More Accurate Check) ---
+    if not dictionary:
+        return True # Cannot perform stage 2, so we optimistically pass
+
+    words = text.lower().split()
+    if len(words) < 5:
+        return True # Not enough words to make a reliable judgment
+
+    in_dict_count = sum(1 for word in words if word in dictionary)
     quality_ratio = in_dict_count / len(words)
     
-    # Return True if the ratio meets or exceeds our quality threshold
     return quality_ratio >= threshold
 
 def safe_fname(name: str, fallback: str = "file") -> str:

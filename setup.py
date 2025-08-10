@@ -6,13 +6,19 @@ long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="powerocr",
-    version="1.0.0",
+    version="1.0.1",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
     author="Phuoc Nguyen",
     description="A high-performance, parallel OCR library for processing local files.",
     long_description=long_description,
     long_description_content_type='text/markdown',
+
+    package_data={
+        "powerocr": ["*.txt"], # Tells it to include any .txt file inside the powerocr package
+    },
+    include_package_data=True,
+
     install_requires=[
         "easyocr",
         "torch",

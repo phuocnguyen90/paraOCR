@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--ignore-keyword", action='append', dest='ignore_keywords', help="A keyword in a filename to ignore (can be used multiple times).")
     parser.add_argument("--force-rerun", action='store_true', help="Force reprocessing of all files, ignoring previous results.")
     parser.add_argument("--error-log-path", type=Path, help="Path to save the error log JSONL file.")
-    parser.add_argument("--dictionary-path", type=Path, help="Path to a dictionary file for text quality checks.")
+    
     parser.add_argument("--export-txt", action='store_true', help="Also export a discrete .txt file for each document in its source directory.")
     perf_group = parser.add_argument_group('Performance Logging')
     perf_group.add_argument("--log-performance", action='store_true', help="Enable detailed performance logging to a file.")
@@ -82,8 +82,10 @@ def main():
 
     # --- Create Config ---
     config_args = {k: v for k, v in vars(args).items() if v is not None}
+    vi_dictionary = load_dictionary() 
+    config_args['dictionary'] = vi_dictionary
     config = OCRConfig.from_dict(config_args)
-    
+
     if config.log_performance and config.performance_log_path:
         config.performance_log_path.parent.mkdir(parents=True, exist_ok=True)
     
