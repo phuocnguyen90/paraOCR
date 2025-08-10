@@ -34,6 +34,32 @@ def collect_tasks(config: OCRConfig) -> list[OCRTask]:
             tasks.append(OCRTask(source_path=file_path))
     return tasks
 
+
+def run_pipeline(config: OCRConfig):
+    """
+    The main workhorse function. It takes a config object and runs the entire pipeline.
+    This can be called directly from other Python scripts, like our Colab notebook.
+    """
+    config.temp_dir.mkdir(parents=True, exist_ok=True)
+    config.output_path.parent.mkdir(parents=True, exist_ok=True)
+    if config.error_log_path:
+        config.error_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print("--- Starting ParaOCR ---")
+    print(f"Input Directory: {config.input_dir}")
+    print(f"Output File: {config.output_path}")
+    print(f"CPU Workers: {config.num_workers} | GPU Workers: {config.num_gpu_workers} | GPU Batch Size: {config.gpu_batch_size} | DPI: {config.dpi}")
+    print("-------------------------")
+
+    tasks_to_run = collect_tasks(config)
+    if tasks_to_run:
+        print(f"\nStarting OCR process on {len(tasks_to_run)} new files.")
+        runner = OCRRunner(config)
+        runner.run(tasks_to_run)
+    else:
+        print("\nNo new files to process based on current settings. All tasks are complete.")
+    print("\n--- ParaOCR Processing Complete ---")
+
 def main():
     parser = argparse.ArgumentParser(description="paraOCR: High-performance file OCR.")
     
@@ -59,33 +85,11 @@ def main():
 
     # --- Create Config ---
     config_args = {k: v for k, v in vars(args).items() if v is not None}
-    vi_dictionary = load_dictionary() 
-    config_args['dictionary'] = vi_dictionary
     config = OCRConfig.from_dict(config_args)
-    config.temp_dir.mkdir(parents=True, exist_ok=True)
-    config.output_path.parent.mkdir(parents=True, exist_ok=True)
-    if config.error_log_path: config.error_log_path.parent.mkdir(parents=True, exist_ok=True)
-
-
-    print("--- Starting paraOCR ---")
-    print(f"Input Directory: {config.input_dir}")
-    print(f"Output File: {config.output_path}")
-    print(f"CPU Workers: {config.num_workers} | GPU Batch Size: {config.gpu_batch_size} | DPI: {config.dpi}")
-    print("-------------------------")
-
-    # --- THE CORRECTED WORKFLOW ---
-    # 1. Collect and filter tasks first. This function now contains the resumability logic.
-    tasks_to_run = collect_tasks(config)
     
-    # 2. If there are tasks to do, create the runner and execute them.
-    if tasks_to_run:
-        print(f"\nStarting OCR process on {len(tasks_to_run)} new files.")
-        runner = OCRRunner(config)
-        runner.run(tasks_to_run)
-    else:
-        print("\nNo new files to process based on current settings. All tasks are complete.")
+    # Call the main workhorse function
+    run_pipeline(config)
 
-    print("\n--- paraOCR Processing Complete ---")
 
 if __name__ == '__main__':
     main()
