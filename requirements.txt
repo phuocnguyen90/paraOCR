@@ -1,0 +1,23 @@
+      
+# requirements.txt
+
+# Core OCR engine and its main dependency
+easyocr
+torch
+torchvision
+torchaudio
+
+# For PDF processing
+PyMuPDF
+
+# For image handling
+Pillow
+
+# For progress bars in the CLI
+tqdm
+
+# For making filesystem-safe names (only if you add this utility)
+# Note: This is a good-to-have, but not strictly required if you remove the 'slugify' helper.
+# python-slugify
+
+    

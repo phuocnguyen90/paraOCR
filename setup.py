@@ -1,0 +1,31 @@
+# setup.py
+from setuptools import setup, find_packages
+from pathlib import Path
+this_directory = Path(__file__).parent
+long_description = (this_directory / "README.md").read_text(encoding="utf-8")
+
+setup(
+    name="powerocr",
+    version="1.0.0",
+    package_dir={"": "src"},
+    packages=find_packages(where="src"),
+    author="Phuoc Nguyen",
+    description="A high-performance, parallel OCR library for processing local files.",
+    long_description=long_description,
+    long_description_content_type='text/markdown',
+    install_requires=[
+        "easyocr",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "PyMuPDF",
+        "tqdm",
+        "Pillow",
+        "numpy"
+    ],
+    entry_points={
+        'console_scripts': [
+            'powerocr=powerocr.cli:main',
+        ],
+    },
+)
