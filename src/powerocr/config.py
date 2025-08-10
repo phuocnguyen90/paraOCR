@@ -22,18 +22,23 @@ class OCRConfig:
     languages: List[str] = field(default_factory=lambda: ['vi', 'en'])
     ignore_keywords: List[str] = field(default_factory=list)
     num_workers: int = max(1, cpu_count() - 2)
-    gpu_batch_size: int = 16
+    gpu_batch_size: int = 32
     dpi: int = 200
     beamsearch: bool = False
     force_rerun: bool = False
     temp_dir: Path = Path(tempfile.gettempdir()) / "powerocr_temp"
     export_txt: bool = False
     log_performance: bool = False
-    performance_log_path: Path = Path("powerocr_performance_log.jsonl")
+    performance_log_path: Path = Path("powerocr_performance_log.jsonl")    
+    process_tables: bool = False
+    process_images: bool = False
+
     
     min_native_text_chars: int = 100
     native_text_quality_threshold: float = 0.3
     dictionary: Set[str] = field(default_factory=get_default_dictionary)
+
+    pdf_engine: str = "pymupdf"
 
     def to_dict(self):
         """Converts config to a dictionary suitable for multiprocessing (pickling)."""

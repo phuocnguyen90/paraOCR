@@ -11,51 +11,27 @@ from .utils import load_dictionary, load_processed_ids # <-- Import utils
 from .models import OCRTask # <-- Import OCRTask model
 
 def collect_tasks(config: OCRConfig) -> list[OCRTask]:
-    """
-    Scans the input directory, filters against existing results for resumability,
-    and creates a final list of files to process.
-    """
     print("--- Collecting and filtering tasks ---")
-    
-    # --- THIS IS THE RESUMABILITY LOGIC ---
     processed_paths = set()
     if not config.force_rerun:
-        # Load the set of source_path strings from the output file
         processed_paths = load_processed_ids(config.output_path)
         if processed_paths:
             print(f"Found {len(processed_paths)} previously processed files to skip.")
-
     tasks = []
     ignore_keywords_lower = [k.lower() for k in config.ignore_keywords]
-    
-    # Check if the input directory exists
     if not config.input_dir.exists():
         print(f"Error: Input directory does not exist: {config.input_dir}")
         return []
-        
-    # Use rglob to find all files recursively. Converting to a list here to show a total in tqdm.
     all_files_in_dir = list(config.input_dir.rglob("*"))
     print(f"Scanning {len(all_files_in_dir)} total paths in input directory...")
-
     for file_path in tqdm(all_files_in_dir, desc="Filtering tasks"):
-        if not file_path.is_file():
-            continue
-            
+        if not file_path.is_file(): continue
         file_path_str = str(file_path)
-        # Skip if already processed
-        if file_path_str in processed_paths:
-            continue
-            
+        if file_path_str in processed_paths: continue
         filename_lower = file_path.name.lower()
-        
-        # Skip if filename contains an ignore keyword
-        if any(keyword in filename_lower for keyword in ignore_keywords_lower):
-            continue
-        
-        # Add to task list if it's a supported file type
+        if any(keyword in filename_lower for keyword in ignore_keywords_lower): continue
         if filename_lower.endswith(('.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
             tasks.append(OCRTask(source_path=file_path))
-            
     return tasks
 
 def main():
@@ -72,7 +48,8 @@ def main():
     parser.add_argument("--ignore-keyword", action='append', dest='ignore_keywords', help="A keyword in a filename to ignore (can be used multiple times).")
     parser.add_argument("--force-rerun", action='store_true', help="Force reprocessing of all files, ignoring previous results.")
     parser.add_argument("--error-log-path", type=Path, help="Path to save the error log JSONL file.")
-    
+    parser.add_argument("--pdf-engine", type=str, default="pymupdf", choices=["pymupdf"],
+                        help="The underlying engine to use for PDF processing.") 
     parser.add_argument("--export-txt", action='store_true', help="Also export a discrete .txt file for each document in its source directory.")
     perf_group = parser.add_argument_group('Performance Logging')
     perf_group.add_argument("--log-performance", action='store_true', help="Enable detailed performance logging to a file.")
@@ -85,14 +62,10 @@ def main():
     vi_dictionary = load_dictionary() 
     config_args['dictionary'] = vi_dictionary
     config = OCRConfig.from_dict(config_args)
-
-    if config.log_performance and config.performance_log_path:
-        config.performance_log_path.parent.mkdir(parents=True, exist_ok=True)
-    
     config.temp_dir.mkdir(parents=True, exist_ok=True)
     config.output_path.parent.mkdir(parents=True, exist_ok=True)
-    if config.error_log_path:
-        config.error_log_path.parent.mkdir(parents=True, exist_ok=True)
+    if config.error_log_path: config.error_log_path.parent.mkdir(parents=True, exist_ok=True)
+
 
     print("--- Starting PowerOCR ---")
     print(f"Input Directory: {config.input_dir}")

@@ -181,3 +181,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 tests/
+*.jsonl
