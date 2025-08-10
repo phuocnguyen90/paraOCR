@@ -2,7 +2,9 @@
 
 **A high-performance, parallel pipeline for batch OCR processing of local files.**
 
-`paraOCR` is a Python command-line tool designed to perform high-quality Optical Character Recognition (OCR) on thousands of local files (PDFs, PNGs, JPEGs) quickly and efficiently. It acts as a powerful wrapper around the excellent `easyocr` library, adding a robust parallel processing architecture to maximize the throughput of your hardware.
+`paraOCR` is a Python command-line tool for running high-quality OCR on large collections of local files — PDFs, PNGs, JPEGs — as quickly and efficiently as your hardware allows. It builds on the `easyocr` library, but adds what’s missing: true batch processing, a parallel architecture that speeds up even single large files, and practical features for real-world use.
+
+EasyOCR is great, but it doesn’t natively handle running through hundreds or thousands of documents in one go. After years of seeing no one turn it into a production-ready tool, I decided to do it myself. `paraOCR` supports batch processing, parallel execution, pause-and-resume, and even a web UI so you can run it easily on Google Colab.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -11,7 +13,6 @@
 -   **Parallel CPU & GPU Processing:** Maximizes hardware utilization for unparalleled speed.
 -   **Multiple Concurrent GPU Workers:** Fully utilizes high-VRAM GPUs by running multiple OCR engines at once.
 -   **Low & Stable RAM Usage:** A true streaming pipeline design ensures that even massive datasets can be processed without running out of system memory.
--   **Smart Text Extraction:** Automatically detects and uses high-quality text embedded in PDFs, falling back to powerful OCR only when necessary.
 -   **Resumable & Robust:** The pipeline is fully resumable and gracefully handles corrupted files by logging them instead of crashing.
 -   **Extensible Architecture:** Designed with hooks for future content-aware processors (e.g., table and image extraction).
 -   **Detailed Performance Logging:** An optional flag generates a detailed performance log to help you tune parameters and identify bottlenecks.
@@ -65,14 +66,14 @@ Ensure you have a compatible version of Python (3.8+ recommended).
 
 ## Quickstart Guide
 
-The primary command for paraOCR is `paraOCR`. All processing is driven through this single entry point.
+The primary command for paraOCR is `paraocr`. All processing is driven through this single entry point.
 
 **Basic Usage:**
 
 Process all supported files in a directory named `my_scanned_docs` and save the results to `ocr_results.jsonl`.
 
 ```bash
-paraOCR --input-dir ./my_scanned_docs --output-path ./ocr_results.jsonl
+paraocr --input-dir ./my_scanned_docs --output-path ./ocr_results.jsonl
 ```
 
 **Advanced Usage (Tuning for Performance):**

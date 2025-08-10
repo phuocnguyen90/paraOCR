@@ -4,11 +4,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from tqdm import tqdm
-import sys
+import json
 
 from .config import OCRConfig
-from .parallel import OCRRunner
-from .utils import load_dictionary, load_processed_ids # <-- Import utils
+from .utils import load_dictionary, load_processed_ids 
 from .models import OCRTask 
 
 __all__ = ["collect_tasks", "run_pipeline", "main"]
@@ -80,17 +79,43 @@ def main():
     parser.add_argument("--error-log-path", type=Path, help="Path to save the error log JSONL file.")
     parser.add_argument("--pdf-engine", type=str, default="pymupdf", choices=["pymupdf"], help="The underlying engine to use for PDF processing.") 
     parser.add_argument("--export-txt", action='store_true', help="Also export a discrete .txt file for each document in its source directory.")
+    parser.add_argument("--ocr-backend", type=str,
+                        default="paraocr.ocr_backends.easyocr_backend.EasyOCREngine")
+    parser.add_argument("--ocr-backend-kwargs", type=str, default="{}",
+                        help='JSON dict for backend init kwargs, for example {"languages": ["vi","en"], "gpu": true}')
     perf_group = parser.add_argument_group('Performance Logging')
     perf_group.add_argument("--log-performance", action='store_true', help="Enable detailed performance logging to a file.")
     perf_group.add_argument("--performance-log-path", type=Path, help="Path to save the performance log JSONL file.")
     
     args = parser.parse_args()
 
-    # --- Create Config ---
-    config_args = {k: v for k, v in vars(args).items() if v is not None}
-    config = OCRConfig.from_dict(config_args)
-    
-    # Call the main workhorse function
+    # normalize backend kwargs into a dict
+    try:
+        kwargs = json.loads(args.ocr_backend_kwargs) if isinstance(args.ocr_backend_kwargs, str) else args.ocr_backend_kwargs
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"Invalid JSON for --ocr-backend-kwargs: {e}")
+
+    # build config dict explicitly so types are right
+    config = OCRConfig.from_dict({
+        "input_dir": args.input_dir,
+        "output_path": args.output_path,
+        "error_log_path": args.error_log_path,
+        "languages": args.languages,
+        "ignore_keywords": args.ignore_keywords or [],
+        "num_workers": args.workers,
+        "gpu_batch_size": args.gpu_batch_size,
+        "num_gpu_workers": None,  # let default stand unless you add a flag
+        "dpi": args.dpi,
+        "beamsearch": args.beamsearch,
+        "force_rerun": args.force_rerun,
+        "export_txt": args.export_txt,
+        "log_performance": args.log_performance,
+        "performance_log_path": args.performance_log_path,
+        "pdf_engine": args.pdf_engine,
+        "ocr_backend": args.ocr_backend,
+        "ocr_backend_kwargs": kwargs,
+    })
+
     run_pipeline(config)
 
 

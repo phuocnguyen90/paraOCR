@@ -1,17 +1,23 @@
 # paraOCR/config.py
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Set
+from typing import List, Set, Dict, Any
 import tempfile
 from multiprocessing import cpu_count
+from importlib.resources import files
 
-# This function is defined here so it can be used as a default_factory
+
 def get_default_dictionary() -> Set[str]:
-    default_dict_path = Path("vi_dict.txt")
-    if default_dict_path.exists():
-        with open(default_dict_path, 'r', encoding='utf-8') as f:
-            return {line.strip().lower() for line in f if line.strip()}
-    return set()
+    # try packaged resource first
+    try:
+        txt = files("paraocr").joinpath("vi_full.txt").read_text(encoding="utf-8")
+        return {line.strip().lower() for line in txt.splitlines() if line.strip()}
+    except Exception:
+        # fallback to local dev file if present
+        p = Path("vi_full.txt")
+        if p.exists():
+            return {line.strip().lower() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()}
+        return set()
 
 @dataclass
 class OCRConfig:
@@ -19,20 +25,27 @@ class OCRConfig:
     input_dir: Path
     output_path: Path
     error_log_path: Path = Path("paraOCR_error_log.jsonl")
+
     languages: List[str] = field(default_factory=lambda: ['vi', 'en'])
     ignore_keywords: List[str] = field(default_factory=list)
+
     num_workers: int = max(1, cpu_count() - 2)
     gpu_batch_size: int = 16
     num_gpu_workers: int = 3
     dpi: int = 200
     beamsearch: bool = False
     force_rerun: bool = False
+
     temp_dir: Path = Path(tempfile.gettempdir()) / "paraOCR_temp"
     export_txt: bool = False
     log_performance: bool = False
-    performance_log_path: Path = Path("paraOCR_performance_log.jsonl")    
+    performance_log_path: Path = Path("paraOCR_performance_log.jsonl")   
+
     process_tables: bool = False
     process_images: bool = False
+
+    ocr_backend: str = "paraocr.ocr_backends.easyocr_backend.EasyOCREngine"
+    ocr_backend_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     
     min_native_text_chars: int = 100
@@ -49,25 +62,39 @@ class OCRConfig:
                 d[key] = str(value)
         return d
 
-    # --- THIS IS THE NEW, IMPORTANT METHOD ---
+
     @classmethod
     def from_dict(cls, config_dict: dict):
-        """Creates a config instance from a dictionary, correctly handling Path objects."""
-        # Define which fields are expected to be paths
-        path_fields = ['input_dir', 'output_path', 'error_log_path', 'temp_dir']
-        
-        # Convert string paths back to Path objects
-        for field_name in path_fields:
-            if field_name in config_dict and isinstance(config_dict[field_name], str):
-                config_dict[field_name] = Path(config_dict[field_name])
-        
-        # Handle dictionary if it's passed as a path string
-        if 'dictionary_path' in config_dict:
-            dict_path = Path(config_dict.pop('dictionary_path'))
-            if dict_path.exists():
-                 with open(dict_path, 'r', encoding='utf-8') as f:
-                    config_dict['dictionary'] = {line.strip().lower() for line in f if line.strip()}
-            elif 'dictionary' not in config_dict:
-                 config_dict['dictionary'] = set()
+        d = dict(config_dict)
 
-        return cls(**config_dict)
+        # normalize path-like fields
+        for key in ["input_dir", "output_path", "error_log_path", "temp_dir", "performance_log_path"]:
+            if key in d and isinstance(d[key], str):
+                d[key] = Path(d[key])
+
+
+        # normalize kwargs
+        if "ocr_backend_kwargs" in d and isinstance(d["ocr_backend_kwargs"], str):
+            import json
+            d["ocr_backend_kwargs"] = json.loads(d["ocr_backend_kwargs"])
+
+        # allow explicit None to mean use default
+        for key in ["num_workers", "gpu_batch_size", "num_gpu_workers", "dpi", "performance_log_path"]:
+            if d.get(key) is None:
+                d.pop(key)
+
+        # optional external dictionary path
+        dict_path = d.pop("dictionary_path", None)
+        if dict_path:
+            p = Path(dict_path)
+            if p.exists():
+                d["dictionary"] = {line.strip().lower() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()}
+            elif "dictionary" not in d:
+                d["dictionary"] = set()
+
+        cfg = cls(**d)
+        if cfg.log_performance and not cfg.performance_log_path:
+            cfg.performance_log_path = Path(str(cfg.output_path)).with_suffix(".perf.jsonl")
+
+
+        return cfg

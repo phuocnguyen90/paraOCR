@@ -1,8 +1,6 @@
 # paraOCR/parallel.py
 
 import json
-import gc
-import uuid
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Any
@@ -10,10 +8,6 @@ from multiprocessing import Pool, Manager, cpu_count
 from collections import defaultdict
 
 import fitz
-from PIL import Image
-import numpy as np
-import easyocr
-import torch
 from tqdm import tqdm
 
 from .config import OCRConfig
@@ -108,8 +102,16 @@ class OCRRunner:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
     def _log_performance(self, metric: Dict):
-        if not self.config.log_performance: return
-        with open(self.config.performance_log_path, 'a', encoding='utf-8') as f:
+        if not self.config.log_performance:
+            return
+        # choose a default if none was provided
+        path = self.config.performance_log_path
+        if not path:
+            # put perf log next to results file
+            path = Path(str(self.config.output_path)).with_suffix(".perf.jsonl")
+            self.config.performance_log_path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a', encoding='utf-8') as f:
             log_entry = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **metric}
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
@@ -164,7 +166,7 @@ class OCRRunner:
             print("\n--- Dispatching tasks for layout analysis ---")
             tagged_tasks = []
             with Pool(processes=self.config.num_workers) as dispatch_pool:
-                results_iterator = dispatch_pool.imap_unordered(worker_dispatcher, page_level_tasks)
+                results_iterator = dispatch_pool.imap_unordered(worker_dispatcher, page_level_tasks, chunksize=16)
                 for result in tqdm(results_iterator, total=len(page_level_tasks), desc="Analyzing Page Layouts"):
                     tagged_tasks.append(result)
 
@@ -195,11 +197,11 @@ class OCRRunner:
                 # The `initializer` function is the key: it creates one OCREngine per worker.
                 with Pool(processes=self.config.num_gpu_workers, 
                           initializer=initialize_gpu_worker, 
-                          initargs=(self.config.languages, self.config.beamsearch)) as gpu_pool:
+                          initargs=(self.config.ocr_backend, self.config.ocr_backend_kwargs)) as gpu_pool:
 
                     # --- STAGE 4a: Submit CPU Rendering Jobs ---
                     # The main process streams rendering tasks to the render_pool.
-                    render_iterator = render_pool.imap_unordered(worker_render_text_page, text_render_queue)
+                    render_iterator = render_pool.imap_unordered(worker_render_text_page, text_render_queue, chunksize=16)
                     
                     async_gpu_results = []
                     image_batch_buffer = []; meta_batch_buffer = []
@@ -230,20 +232,26 @@ class OCRRunner:
                     # Now, we wait for all the submitted GPU jobs to complete.
                     print("\n--- Aggregating GPU results ---")
                     for job, meta_data in tqdm(async_gpu_results, desc="Aggregating Batches"):
-                        # job.get() blocks until this specific batch is done
-                        ocr_texts, gpu_duration = job.get()
-                        
+                        try:
+                            ocr_texts, gpu_duration = job.get()
+                        except Exception as e:
+                            for meta in meta_data:
+                                self._log_error(meta["source_path"], f"GPU batch failed: {e}")
+                            ocr_texts, gpu_duration = [""] * len(meta_data), 0.0
+
                         perf_tracker.attribute_gpu_batch_time(meta_data, gpu_duration)
 
-                        # Update the shared progress tracker with the OCR'd text
                         for i, text in enumerate(ocr_texts):
                             meta = meta_data[i]
-                            # We need to access the Manager.list correctly
-                            # Note: This direct modification might be slow. A queue is better for extreme scale.
                             progress_tracker[meta["source_path"]][meta["page_num"]] = {"type": "text", "data": text}
-                        
-                        # Clean up temp files for this batch
-                        for meta in meta_data: Path(meta["temp_path"]).unlink()
+
+                        for meta in meta_data:
+                            p = Path(meta["temp_path"])
+                            try:
+                                if p.exists():
+                                    p.unlink()
+                            except Exception as e:
+                                self._log_error(meta["source_path"], f"Temp cleanup failed: {e}")
 
             # --- STAGE 5: FINAL WRITE ---
             # Convert the Manager.dict back to a regular dict for the final write.

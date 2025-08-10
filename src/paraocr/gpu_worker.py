@@ -1,49 +1,28 @@
-# paraOCR/gpu_worker.py
-
+# paraocr/gpu_worker.py
 import os
-from PIL import Image
+from typing import List, Tuple, Dict, Any
 import numpy as np
-import easyocr
-from typing import List, Tuple
-import time
+from PIL import Image
+import importlib
 
-# --- Global variable to hold the model ---
-# This is a key optimization: the model is loaded only ONCE when the worker process starts.
-ocr_engine = None
+_engine = None
 
-def initialize_gpu_worker(languages: List[str], beamsearch: bool):
-    """
-    This function is called once per worker process to initialize its own OCR engine.
-    """
-    global ocr_engine
-    print(f"Initializing GPU Worker (PID {os.getpid()})...")
-    # Each worker gets its own instance of the easyocr.Reader.
-    ocr_engine = easyocr.Reader(languages, gpu=True)
-    if beamsearch:
-        ocr_engine.beamsearch = True
-    print(f"GPU Worker (PID {os.getpid()}) initialized successfully.")
+def _import_obj(dotted_path: str):
+    mod_path, _, obj_name = dotted_path.rpartition(".")
+    mod = importlib.import_module(mod_path)
+    return getattr(mod, obj_name)
+
+def initialize_gpu_worker(backend_path: str, backend_kwargs: Dict[str, Any]):
+    """Called once per process. Creates one engine instance in global state."""
+    global _engine
+    print(f"Initializing GPU worker with backend {backend_path} in PID {os.getpid()}...")
+    EngineCls = _import_obj(backend_path)
+    _engine = EngineCls(**(backend_kwargs or {}))
+    print(f"GPU worker ready in PID {os.getpid()}.")
 
 def process_gpu_batch(image_paths: List[str]) -> Tuple[List[str], float]:
-    """
-    Now returns a tuple: (list_of_texts, duration_of_work).
-    """
-    global ocr_engine
-    if not ocr_engine or not image_paths:
-        return ([""] * len(image_paths), 0.0)
-    
-    start_time = time.perf_counter()
-    try:
-        # The logic for OCR is the same
-        all_texts = []
-        for path in image_paths:
-            img_array = np.array(Image.open(path))
-            result = ocr_engine.readtext(img_array, detail=0, paragraph=True)
-            all_texts.append("\n".join(result))
-        
-        duration = time.perf_counter() - start_time
-        return (all_texts, duration)
-
-    except Exception as e:
-        duration = time.perf_counter() - start_time
-        print(f"\n[GPU Worker Error] Batch processing failed: {e}")
-        return ([""] * len(image_paths), duration)
+    global _engine
+    if _engine is None or not image_paths:
+        return [""] * len(image_paths), 0.0
+    imgs = [np.array(Image.open(p)) for p in image_paths]
+    return _engine.read_batch(imgs)
