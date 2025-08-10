@@ -1,4 +1,5 @@
 # paraOCR/cli.py
+from __future__ import annotations
 
 import argparse
 from pathlib import Path
@@ -8,7 +9,9 @@ import sys
 from .config import OCRConfig
 from .parallel import OCRRunner
 from .utils import load_dictionary, load_processed_ids # <-- Import utils
-from .models import OCRTask # <-- Import OCRTask model
+from .models import OCRTask 
+
+__all__ = ["collect_tasks", "run_pipeline", "main"]
 
 def collect_tasks(config: OCRConfig) -> list[OCRTask]:
     print("--- Collecting and filtering tasks ---")
@@ -40,6 +43,7 @@ def run_pipeline(config: OCRConfig):
     The main workhorse function. It takes a config object and runs the entire pipeline.
     This can be called directly from other Python scripts.
     """
+    from .parallel import OCRRunner
     config.temp_dir.mkdir(parents=True, exist_ok=True)
     config.output_path.parent.mkdir(parents=True, exist_ok=True)
     if config.error_log_path:
