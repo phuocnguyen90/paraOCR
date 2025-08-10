@@ -1,8 +1,8 @@
-# paraOCR
+# ParaOCR
 
 **A high-performance, parallel pipeline for batch OCR processing of local files.**
 
-paraOCR is a Python command-line tool designed to perform high-quality Optical Character Recognition (OCR) on thousands of local files (PDFs, PNGs, JPEGs) quickly and efficiently. It acts as a powerful wrapper around the excellent `easyocr` library, adding a robust parallel processing architecture to maximize the throughput of your hardware.
+`paraOCR` is a Python command-line tool designed to perform high-quality Optical Character Recognition (OCR) on thousands of local files (PDFs, PNGs, JPEGs) quickly and efficiently. It acts as a powerful wrapper around the excellent `easyocr` library, adding a robust parallel processing architecture to maximize the throughput of your hardware.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
