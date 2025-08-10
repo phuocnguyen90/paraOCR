@@ -181,3 +181,7 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 tests/
+
+*.jsonl
+vanilla_bench.py
+paraOCR_performance_log.jsonl
