@@ -6,7 +6,7 @@ import uuid
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Any
-from multiprocessing import Pool
+from multiprocessing import Pool, Manager, cpu_count
 from collections import defaultdict
 
 import fitz
@@ -21,6 +21,7 @@ from .models import OCRResult, OCRTask
 from .utils import is_native_text_good_quality
 from .pdf_processor import get_pdf_processor
 from .processors import worker_dispatcher, worker_render_text_page, worker_process_table_page, worker_process_image_page
+from .gpu_worker import initialize_gpu_worker, process_gpu_batch
 
 class PerformanceTracker:
     def __init__(self):
@@ -43,13 +44,13 @@ class OCREngine:
         self.reader = easyocr.Reader(languages, gpu=gpu)
         if beamsearch: self.reader.beamsearch = True
         self.device = 'CUDA' if gpu and torch.cuda.is_available() else 'CPU'
-        self.has_batch_support = hasattr(self.reader, 'readtext_batch')
+
         print(f"--- EasyOCR Engine on {self.device} (Beam Search: {beamsearch}, Batch Support: {self.has_batch_support}) ---")
     def process_images_in_batch(self, images: List[Image.Image]) -> List[str]:
         if not images: return []
         try:
             if self.has_batch_support:
-                results = self.reader.readtext_batch([np.array(img) for img in images], detail=0, paragraph=True)
+                results = self.reader.readtext([np.array(img) for img in images], detail=0, paragraph=True)
                 return ["\n".join(res) for res in results]
             else:
                 return ["\n".join(self.reader.readtext(np.array(img), detail=0, paragraph=True)) for img in images]
@@ -67,10 +68,11 @@ def master_worker(task: Dict) -> Dict:
     result["duration_seconds"] = time.perf_counter() - start_time
     return result
 
+# --- MAIN RUNNER CLASS ---
 class OCRRunner:
     def __init__(self, config: OCRConfig):
         self.config = config
-        self.engine = OCREngine(config.languages, gpu=torch.cuda.is_available(), beamsearch=config.beamsearch)
+        # The runner no longer has its own engine. Engines live in the GPU workers.
         self.pdf_processor = get_pdf_processor(config.pdf_engine)
 
     def _log_error(self, source_path: str, reason: str):
@@ -118,12 +120,20 @@ class OCRRunner:
     def run(self, tasks: List[OCRTask]):
         perf_tracker = PerformanceTracker()
         file_start_times: Dict[str, float] = {}
-        with open(self.config.output_path, 'a', encoding='utf-8') as outfile:
+
+        # The Manager allows us to have a shared dictionary for progress tracking across processes
+        with Manager() as manager, open(self.config.output_path, 'a', encoding='utf-8') as outfile:
+            
+            # --- STAGE 1: SCANNING & NATIVE TEXT EXTRACTION ---
+            # This stage happens in the main process. It's fast.
+            # It filters out easy cases and creates a definitive list of pages needing heavy processing.
             page_level_tasks = self._create_page_tasks(tasks, outfile, perf_tracker, file_start_times)
             if not page_level_tasks:
                 print("No new pages found for OCR processing."); return
             print(f"Created {len(page_level_tasks)} page-level tasks for parallel processing.")
 
+            # --- STAGE 2: LAYOUT ANALYSIS & DISPATCHING ---
+            # A pool of CPU workers analyzes each page layout and tags it with a processing type.
             print("\n--- Dispatching tasks for layout analysis ---")
             tagged_tasks = []
             with Pool(processes=self.config.num_workers) as pool:
@@ -131,62 +141,76 @@ class OCRRunner:
                 for result in tqdm(results_iterator, total=len(page_level_tasks), desc="Analyzing Page Layouts"):
                     tagged_tasks.append(result)
 
-            document_progress: Dict[str, List[Optional[Dict]]] = defaultdict(lambda: [])
-            tasks_for_pool = []
+            # --- STAGE 3: ROUTING & PROGRESS TRACKER SETUP ---
+            # We sort the tagged tasks into different queues for different worker types.
+            text_render_queue = [t for t in tagged_tasks if t.get("processing_type") == "text_ocr"]
+            # (Future queues for tables/images would be created here)
+
+            # The progress tracker is the master dictionary for aggregating final results.
+            progress_tracker = manager.dict()
             for task in tagged_tasks:
                 path_str = task["source_path"]
-                if len(document_progress[path_str]) < task["total_pages"]:
-                    document_progress[path_str] = [None] * task["total_pages"]
-                
-                task_type = task.get("processing_type")
-                if task_type == "error":
+                if path_str not in progress_tracker:
+                    progress_tracker[path_str] = manager.list([None] * task["total_pages"])
+                if task.get("processing_type") == "error":
                     self._log_error(path_str, task.get("error", "Dispatcher failed"))
-                    document_progress[path_str][task["page_num"]] = {"type": "error", "data": task.get("error")}
-                elif (task_type == "text_ocr") or \
-                     (self.config.process_tables and task_type == "table") or \
-                     (self.config.process_images and task_type == "image"):
-                    tasks_for_pool.append(task)
-            
-            if not tasks_for_pool:
-                print("No tasks to process after dispatching."); self._write_final_results(document_progress, outfile, file_start_times, perf_tracker); return
-            
-            print(f"\n--- Starting parallel processing on {len(tasks_for_pool)} tasks ---")
-            image_batch_buffer = []; meta_batch_buffer = []
+                    progress_tracker[path_str][task["page_num"]] = {"type": "error", "data": task.get("error")}
 
-            with Pool(processes=self.config.num_workers) as pool:
-                results_iterator = pool.imap_unordered(master_worker, tasks_for_pool)
-                for result in tqdm(results_iterator, total=len(tasks_for_pool), desc="Processing Tasks (CPU)"):
-                    if result.get("error"):
-                        self._log_error(result["source_path"], result["error"]); continue
+            # --- STAGE 4: PARALLEL PROCESSING (CPU RENDERING + MULTIPLE GPU WORKERS) ---
+            print(f"\n--- Starting parallel OCR with {self.config.num_gpu_workers} GPU workers ---")
+            
+            # This outer pool is for CPU-bound rendering tasks.
+            with Pool(processes=self.config.num_workers) as render_pool:
+                # This inner pool is for GPU-bound OCR tasks.
+                # The `initializer` function is the key: it creates one OCREngine per worker.
+                with Pool(processes=self.config.num_gpu_workers, 
+                          initializer=initialize_gpu_worker, 
+                          initargs=(self.config.languages, self.config.beamsearch)) as gpu_pool:
+
+                    render_iterator = render_pool.imap_unordered(worker_render_text_page, text_render_queue)
                     
-                    perf_tracker.add_cpu_time(result["source_path"], result.get("duration_seconds", 0))
+                    async_gpu_results = []
+                    image_batch_buffer = []
+                    meta_batch_buffer = []
 
-                    if "content" in result:
-                        document_progress[result["source_path"]][result["page_num"]] = {"type": result["content_type"], "data": result["content"]}
-                    elif "temp_path" in result:
-                        image_batch_buffer.append(result["temp_path"]); meta_batch_buffer.append(result)
+                    for result in tqdm(render_iterator, total=len(text_render_queue), desc="Rendering Pages (CPU)"):
+                        if result.get("error"):
+                            self._log_error(result["source_path"], result["error"]); continue
+                        
+                        perf_tracker.add_cpu_time(result["source_path"], result.get("duration_seconds", 0))
+                        
+                        image_batch_buffer.append(result["temp_path"])
+                        meta_batch_buffer.append(result)
 
-                    if len(image_batch_buffer) >= self.config.gpu_batch_size:
-                        self._process_text_batch(image_batch_buffer, meta_batch_buffer, document_progress, perf_tracker)
-                        image_batch_buffer.clear(); meta_batch_buffer.clear()
-            
-            if image_batch_buffer:
-                self._process_text_batch(image_batch_buffer, meta_batch_buffer, document_progress, perf_tracker)
+                        if len(image_batch_buffer) >= self.config.gpu_batch_size:
+                            job = gpu_pool.apply_async(process_gpu_batch, (image_batch_buffer,))
+                            async_gpu_results.append((job, meta_batch_buffer))
+                            image_batch_buffer, meta_batch_buffer = [], []
 
-            self._write_final_results(document_progress, outfile, file_start_times, perf_tracker)
+                    if image_batch_buffer: # Submit the final, partial batch
+                        job = gpu_pool.apply_async(process_gpu_batch, (image_batch_buffer,))
+                        async_gpu_results.append((job, meta_batch_buffer))
 
-    def _process_text_batch(self, image_paths, meta_data, progress_tracker, perf_tracker):
-        images = [Image.open(p) for p in image_paths]
-        start_time = time.perf_counter()
-        ocr_texts = self.engine.process_images_in_batch(images)
-        duration = time.perf_counter() - start_time
-        perf_tracker.attribute_gpu_batch_time(meta_data, duration)
-        for p in image_paths:
-            try: Path(p).unlink()
-            except OSError: pass
-        for i, text in enumerate(ocr_texts):
-            meta = meta_data[i]
-            progress_tracker[meta["source_path"]][meta["page_num"]] = {"type": "text", "data": text}
+                    # --- STAGE 5: ASYNCHRONOUS AGGREGATION ---
+                    # We wait for the GPU results to come back and aggregate them.
+                    print("\n--- Aggregating GPU results ---")
+                    for job, meta_data in tqdm(async_gpu_results, desc="Aggregating Batches"):
+                        start_time = time.perf_counter()
+                        ocr_texts = job.get() # This blocks until this specific batch is done
+                        duration = time.perf_counter() - start_time
+                        perf_tracker.attribute_gpu_batch_time(meta_data, duration)
+
+                        # Update the shared progress tracker with the OCR'd text
+                        for i, text in enumerate(ocr_texts):
+                            meta = meta_data[i]
+                            progress_tracker[meta["source_path"]][meta["page_num"]] = {"type": "text", "data": text}
+                        
+                        # Clean up temp files for this batch
+                        for meta in meta_data: Path(meta["temp_path"]).unlink()
+
+            # --- STAGE 6: FINAL WRITE ---
+            # Convert the Manager.dict back to a regular dict for the final write.
+            self._write_final_results(dict(progress_tracker), outfile, file_start_times, perf_tracker)
 
     def _write_final_results(self, progress_tracker, outfile, file_start_times, perf_tracker):
         print("\n--- Aggregating and writing final results ---")
@@ -203,16 +227,12 @@ class OCRRunner:
                 
                 if self.config.export_txt:
                     full_text = "\n\n--- PAGE BREAK ---\n\n".join([p.get('data', '') for p in pages if p and p.get('type') == 'text'])
-                    if full_text:
-                        self._write_txt_file(Path(path_str), full_text)
+                    if full_text: self._write_txt_file(Path(path_str), full_text)
 
     def _write_txt_file(self, source_path: Path, text: str):
         try:
             txt_filename = source_path.stem + ".txt"
             output_path = source_path.parent / txt_filename
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(text)
+            with open(output_path, 'w', encoding='utf-8') as f: f.write(text)
         except Exception as e:
-            error_reason = f"Failed to write discrete .txt file: {e}"
-            print(f"\n[Warning] {error_reason} for {source_path}")
-            self._log_error(str(source_path), error_reason)
+            self._log_error(str(source_path), f"Failed to write discrete .txt file: {e}")

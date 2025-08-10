@@ -22,7 +22,8 @@ class OCRConfig:
     languages: List[str] = field(default_factory=lambda: ['vi', 'en'])
     ignore_keywords: List[str] = field(default_factory=list)
     num_workers: int = max(1, cpu_count() - 2)
-    gpu_batch_size: int = 32
+    gpu_batch_size: int = 16
+    num_gpu_workers: int = 3
     dpi: int = 200
     beamsearch: bool = False
     force_rerun: bool = False
