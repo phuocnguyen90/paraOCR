@@ -8,13 +8,34 @@ PowerOCR is a Python command-line tool designed to perform high-quality Optical 
 
 ## Key Features
 
--   **Parallel CPU Processing:** Leverages multiple CPU cores for the slow task of rendering PDF pages into images, preventing CPU bottlenecks.
--   **Optimized GPU Batching:** Intelligently batches images to keep your GPU fully utilized for maximum OCR throughput.
+-   **Parallel CPU & GPU Processing:** Maximizes hardware utilization for unparalleled speed.
+-   **Multiple Concurrent GPU Workers:** Fully utilizes high-VRAM GPUs by running multiple OCR engines at once.
 -   **Low & Stable RAM Usage:** A true streaming pipeline design ensures that even massive datasets can be processed without running out of system memory.
 -   **Smart Text Extraction:** Automatically detects and uses high-quality text embedded in PDFs, falling back to powerful OCR only when necessary.
--   **Resumable:** The pipeline is fully resumable. If you stop a job, you can restart it, and it will automatically skip files that have already been processed.
--   **Robust Error Handling:** Gracefully handles corrupted files, generating a detailed error log instead of crashing.
--   **Highly Configurable:** Tune performance with command-line arguments for CPU workers, GPU batch size, image DPI, and more.
+-   **Resumable & Robust:** The pipeline is fully resumable and gracefully handles corrupted files by logging them instead of crashing.
+-   **Extensible Architecture:** Designed with hooks for future content-aware processors (e.g., table and image extraction).
+-   **Detailed Performance Logging:** An optional flag generates a detailed performance log to help you tune parameters and identify bottlenecks.
+
+
+## Performance Benchmarks
+
+`powerocr` leverages parallel processing to dramatically accelerate OCR tasks compared to a standard, sequential script. The following benchmarks were conducted on a system with an **Intel Core i5-12400 CPU** and an **NVIDIA GeForce RTX 3060 (12GB) GPU**.
+
+#### Test 1: Large Document (1 file, 100 pages)
+
+| Metric | Vanilla Script | `powerocr` (Parallel) | Performance Gain |
+| :--- | :--- | :--- | :--- |
+| **Total Time** | 419.4 sec | **200.9 sec** | **2.09x Faster** |
+| **Throughput** | 0.24 pages/sec | **0.50 pages/sec** | **+108%** |
+
+#### Test 2: Mixed Small Files (10 files, 60 pages total)
+
+| Metric | Vanilla Script | `powerocr` (Parallel) | Performance Gain |
+| :--- | :--- | :--- | :--- |
+| **Total Time** | 176.1 sec | **112.5 sec** | **1.57x Faster** |
+| **Throughput** | 0.34 pages/sec | **0.53 pages/sec** | **+56%** |
+
+---
 
 ## Installation
 
@@ -29,15 +50,17 @@ Ensure you have a compatible version of Python (3.8+ recommended).
     ```
 
 2.  **Install PowerOCR:**
+
+    You can clone this repo and install this library using:
+    ```bash
+    git clone https://github.com/phuocnguyen90/powerocr.git
+    cd powerocr
+    pip install -e .
+    ```
+
     Install the library directly from PyPI (WIP):
     ```bash
     pip install powerocr
-    ```
-    Or, for development, install from a local clone:
-    ```bash
-    git clone https://github.com/your-username/powerocr.git
-    cd powerocr
-    pip install -e .
     ```
 
 ## Quickstart Guide
@@ -55,6 +78,7 @@ powerocr --input-dir ./my_scanned_docs --output-path ./ocr_results.jsonl
 **Advanced Usage (Tuning for Performance):**
 
 This command uses 10 CPU workers, a GPU batch size of 32, renders PDFs at a high-quality 300 DPI, and ignores any files with "screenshot" in the name.
+
 
 ```bash
 powerocr \
@@ -119,6 +143,12 @@ This will create a `powerocr_performance_log.jsonl` file with structured timing 
 
 
 ## FAQ & Basic Debugging
+
+**Q: How do I choose the right number of GPU workers `(--gpu-workers`)**
+
+**A:**  This is the most important new setting for performance. It depends entirely on your GPU's VRAM. Each GPU worker loads its own copy of the EasyOCR model into memory.
+
+**Rule of Thumb:** Based on testing, a single GPU worker at 200 DPI and a batch size of 16 consumes approximately 4 GB of VRAM.
 
 **Q: The script is running, but my GPU utilization is low or has sharp peaks and valleys.**
 

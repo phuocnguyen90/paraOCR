@@ -4,7 +4,8 @@ import os
 from PIL import Image
 import numpy as np
 import easyocr
-from typing import List
+from typing import List, Tuple
+import time
 
 # --- Global variable to hold the model ---
 # This is a key optimization: the model is loaded only ONCE when the worker process starts.
@@ -22,34 +23,27 @@ def initialize_gpu_worker(languages: List[str], beamsearch: bool):
         ocr_engine.beamsearch = True
     print(f"GPU Worker (PID {os.getpid()}) initialized successfully.")
 
-def process_gpu_batch(image_paths: List[str]) -> List[str]:
+def process_gpu_batch(image_paths: List[str]) -> Tuple[List[str], float]:
     """
-    The main work function for a GPU worker. It takes a list of image paths,
-    loads them, and processes them one by one using its initialized engine.
+    Now returns a tuple: (list_of_texts, duration_of_work).
     """
     global ocr_engine
     if not ocr_engine or not image_paths:
-        return [""] * len(image_paths)
+        return ([""] * len(image_paths), 0.0)
     
+    start_time = time.perf_counter()
     try:
-        # --- THIS IS THE CORRECTED AND ONLY LOGIC ---
-        # The official easyocr.Reader works on one image at a time.
-        # We loop through the batch and call readtext for each image.
-        # The parallelism comes from having multiple GPU workers doing this loop simultaneously.
-        
+        # The logic for OCR is the same
         all_texts = []
         for path in image_paths:
-            # Load a single image into a numpy array
             img_array = np.array(Image.open(path))
-            
-            # Process the single image using the correct method
             result = ocr_engine.readtext(img_array, detail=0, paragraph=True)
-            
-            # Join the text parts and append to our results list
             all_texts.append("\n".join(result))
-            
-        return all_texts
+        
+        duration = time.perf_counter() - start_time
+        return (all_texts, duration)
 
     except Exception as e:
+        duration = time.perf_counter() - start_time
         print(f"\n[GPU Worker Error] Batch processing failed: {e}")
-        return [""] * len(image_paths)
+        return ([""] * len(image_paths), duration)

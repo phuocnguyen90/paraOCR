@@ -15,7 +15,7 @@ setup(
     long_description_content_type='text/markdown',
 
     package_data={
-        "powerocr": ["*.txt"], # Tells it to include any .txt file inside the powerocr package
+        "powerocr": ["*.txt"], 
     },
     include_package_data=True,
 

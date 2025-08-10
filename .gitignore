@@ -181,4 +181,7 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 tests/
+
 *.jsonl
+vanilla_bench.py
+powerocr_performance_log.jsonl
