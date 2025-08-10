@@ -1,4 +1,4 @@
-# powerocr/processors.py
+# paraOCR/processors.py
 
 import time
 from pathlib import Path

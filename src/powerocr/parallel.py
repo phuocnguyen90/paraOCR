@@ -1,4 +1,4 @@
-# powerocr/parallel.py
+# paraOCR/parallel.py
 
 import json
 import gc
@@ -143,7 +143,7 @@ class OCRRunner:
                 self._log_error(file_path_str, f"Failed to open/count pages: {e}")
         return page_level_tasks
 
-    # powerocr/parallel.py, inside the OCRRunner class
+    # paraOCR/parallel.py, inside the OCRRunner class
 
     def run(self, tasks: List[OCRTask]):
         perf_tracker = PerformanceTracker()

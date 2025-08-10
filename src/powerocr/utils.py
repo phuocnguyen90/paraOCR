@@ -1,4 +1,4 @@
-# powerocr/utils.py
+# paraOCR/utils.py
 
 import json
 from pathlib import Path
@@ -30,7 +30,7 @@ def load_dictionary() -> Set[str]:
     """
     try:
         # This safely finds the path to the data file even after the package is installed
-        filepath = pkg_resources.resource_filename('powerocr', 'vi_full.txt')
+        filepath = pkg_resources.resource_filename('paraOCR', 'vi_full.txt')
         with open(filepath, 'r', encoding='utf-8') as f:
             return {line.strip().lower() for line in f if line.strip()}
     except (FileNotFoundError, ModuleNotFoundError):

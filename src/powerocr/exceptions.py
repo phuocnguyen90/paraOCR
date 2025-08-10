@@ -1,8 +1,8 @@
-# powerocr/exceptions.py
-class PowerOCRError(Exception):
-    """Base exception for the powerocr library."""
+# paraOCR/exceptions.py
+class paraOCRError(Exception):
+    """Base exception for the paraOCR library."""
     pass
 
-class FileProcessingError(PowerOCRError):
+class FileProcessingError(paraOCRError):
     """Raised when a single file fails to process."""
     pass

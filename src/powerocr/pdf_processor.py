@@ -1,4 +1,4 @@
-# powerocr/pdf_processor.py
+# paraOCR/pdf_processor.py
 
 from abc import ABC, abstractmethod
 from pathlib import Path

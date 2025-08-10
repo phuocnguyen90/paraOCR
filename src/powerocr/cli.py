@@ -1,4 +1,4 @@
-# powerocr/cli.py
+# paraOCR/cli.py
 
 import argparse
 from pathlib import Path
@@ -35,7 +35,7 @@ def collect_tasks(config: OCRConfig) -> list[OCRTask]:
     return tasks
 
 def main():
-    parser = argparse.ArgumentParser(description="PowerOCR: High-performance file OCR.")
+    parser = argparse.ArgumentParser(description="paraOCR: High-performance file OCR.")
     
     # --- Arguments ---
     parser.add_argument("-i", "--input-dir", type=Path, required=True, help="Directory containing files to OCR.")
@@ -67,7 +67,7 @@ def main():
     if config.error_log_path: config.error_log_path.parent.mkdir(parents=True, exist_ok=True)
 
 
-    print("--- Starting PowerOCR ---")
+    print("--- Starting paraOCR ---")
     print(f"Input Directory: {config.input_dir}")
     print(f"Output File: {config.output_path}")
     print(f"CPU Workers: {config.num_workers} | GPU Batch Size: {config.gpu_batch_size} | DPI: {config.dpi}")
@@ -85,7 +85,7 @@ def main():
     else:
         print("\nNo new files to process based on current settings. All tasks are complete.")
 
-    print("\n--- PowerOCR Processing Complete ---")
+    print("\n--- paraOCR Processing Complete ---")
 
 if __name__ == '__main__':
     main()

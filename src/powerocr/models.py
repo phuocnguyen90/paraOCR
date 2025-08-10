@@ -1,4 +1,4 @@
-# powerocr/models.py
+# paraOCR/models.py
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Any, Dict

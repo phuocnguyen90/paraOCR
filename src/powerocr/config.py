@@ -1,4 +1,4 @@
-# powerocr/config.py
+# paraOCR/config.py
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Set
@@ -15,10 +15,10 @@ def get_default_dictionary() -> Set[str]:
 
 @dataclass
 class OCRConfig:
-    """Configuration for a PowerOCR processing run."""
+    """Configuration for a paraOCR processing run."""
     input_dir: Path
     output_path: Path
-    error_log_path: Path = Path("powerocr_error_log.jsonl")
+    error_log_path: Path = Path("paraOCR_error_log.jsonl")
     languages: List[str] = field(default_factory=lambda: ['vi', 'en'])
     ignore_keywords: List[str] = field(default_factory=list)
     num_workers: int = max(1, cpu_count() - 2)
@@ -27,10 +27,10 @@ class OCRConfig:
     dpi: int = 200
     beamsearch: bool = False
     force_rerun: bool = False
-    temp_dir: Path = Path(tempfile.gettempdir()) / "powerocr_temp"
+    temp_dir: Path = Path(tempfile.gettempdir()) / "paraOCR_temp"
     export_txt: bool = False
     log_performance: bool = False
-    performance_log_path: Path = Path("powerocr_performance_log.jsonl")    
+    performance_log_path: Path = Path("paraOCR_performance_log.jsonl")    
     process_tables: bool = False
     process_images: bool = False
 

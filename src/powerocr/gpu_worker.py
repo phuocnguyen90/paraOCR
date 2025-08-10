@@ -1,4 +1,4 @@
-# powerocr/gpu_worker.py
+# paraOCR/gpu_worker.py
 
 import os
 from PIL import Image
