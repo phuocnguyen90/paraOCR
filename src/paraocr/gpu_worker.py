@@ -9,6 +9,7 @@ from typing import List, Tuple, Any
 
 import numpy as np
 from PIL import Image
+from .logger import configure_worker_logging 
 
 logger = logging.getLogger("paraocr")
 
@@ -27,11 +28,13 @@ def _import_obj(dotted: str):
         raise ImportError(f"Backend class not found, {dotted}") from e
 
 
-def initialize_gpu_worker(backend_path: str, backend_kwargs: dict):
+def initialize_gpu_worker(log_queue, backend_path: str, backend_kwargs: dict):
     """
     Called once in each GPU worker process.
     Loads the backend class and creates the engine instance.
     """
+    configure_worker_logging(log_queue)
+    logger = logging.getLogger("paraocr")
     pid = os.getpid()
     logger.info("Initializing GPU worker, backend, %s, pid, %s", backend_path, pid)
     try:

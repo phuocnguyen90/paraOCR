@@ -12,7 +12,8 @@ from tqdm import tqdm
 
 from .config import OCRConfig
 from .models import OCRTask
-from .utils import load_processed_ids, setup_logging
+from .utils import load_processed_ids
+from .logger import configure_worker_logging, setup_logging
 
 
 __all__ = ["collect_tasks", "run_pipeline", "main"]
@@ -59,6 +60,7 @@ def run_pipeline(config: OCRConfig):
     Build directories and run the pipeline.
     """
     from .parallel import OCRRunner  # local import to avoid import cycles
+
 
     # Ensure folders exist
     config.temp_dir.mkdir(parents=True, exist_ok=True)

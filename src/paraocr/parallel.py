@@ -24,6 +24,7 @@ from .processors import (
     worker_process_image_page,
 )
 from .gpu_worker import initialize_gpu_worker, process_gpu_batch
+from .logger import configure_worker_logging
 
 logger = logging.getLogger("paraocr")
 
@@ -179,17 +180,25 @@ class OCRRunner:
         return page_level_tasks
 
     # paraOCR/parallel.py, inside the OCRRunner class
+    def _build_backend_kwargs(cfg: OCRConfig) -> Dict[str, Any]:
+        kw = dict(cfg.ocr_backend_kwargs or {})
+        if "languages" not in kw and "lang" not in kw:
+            kw["languages"] = cfg.languages
+        if "gpu" not in kw and "use_gpu" not in kw:
+            kw["gpu"] = True
+            kw["use_gpu"] = True
+        return kw
 
     def run(self, tasks: List[OCRTask]):
+        logger.info("Run started")
         perf_tracker = PerformanceTracker()
         file_start_times: Dict[str, float] = {}
 
-        logger.info("Run started")
-        logger.progress("scan start", extra={"phase": "scan", "pct": 5})
-
         with Manager() as manager, open(self.config.output_path, "a", encoding="utf-8") as outfile:
             # STAGE 1: scanning and native text extraction
+            logger.progress("scan start", extra={"phase": "scan", "pct": 5})
             page_level_tasks = self._create_page_tasks(tasks, outfile, perf_tracker, file_start_times)
+            
             if not page_level_tasks:
                 logger.info("No new pages found for OCR processing")
                 logger.progress("done", extra={"phase": "done", "pct": 100})
@@ -203,13 +212,22 @@ class OCRRunner:
 
             # STAGE 2: layout analysis and dispatching
             logger.info("Dispatching tasks for layout analysis")
+            logger.progress("dispatch start", extra={"phase": "dispatch", "pct": 10})
             tagged_tasks: List[Dict] = []
-            with Pool(processes=self.config.num_workers) as dispatch_pool:
+            with Pool(processes=self.config.num_workers, 
+                initializer=configure_worker_logging, 
+                initargs=(self.config.log_queue,)) as dispatch_pool:
+                dispatched = 0
+                total = len(page_level_tasks)
                 results_iterator = dispatch_pool.imap_unordered(
                     worker_dispatcher, page_level_tasks, chunksize=16
                 )
                 for result in tqdm(results_iterator, total=len(page_level_tasks), desc="Analyzing Page Layouts"):
                     tagged_tasks.append(result)
+                    dispatched += 1
+                    if total and (dispatched % max(1, total // 20) == 0 or dispatched % 50 == 0):
+                        pct = int(dispatched * 100 / total)
+                        logger.info("Dispatch progress: %d%%", pct)
 
             # STAGE 3: routing
             text_render_queue = [t for t in tagged_tasks if t.get("processing_type") == "text_ocr"]
@@ -227,6 +245,10 @@ class OCRRunner:
                         "type": "error",
                         "data": task.get("error"),
                     }
+            if not text_render_queue: # Assuming only text for now
+                logger.info("No pages were identified for OCR processing after dispatching.")
+                self._write_final_results(dict(progress_tracker), outfile, file_start_times, perf_tracker)
+                return
 
             # STAGE 4: parallel processing
             logger.info(
@@ -235,92 +257,64 @@ class OCRRunner:
             )
             logger.progress("render start", extra={"phase": "render", "pct": 25})
 
-            with Pool(processes=self.config.num_workers) as render_pool:
-                # build backend kwargs once
-                def _build_backend_kwargs(cfg: OCRConfig) -> Dict[str, Any]:
-                    kw = dict(cfg.ocr_backend_kwargs or {})
-                    if "languages" not in kw and "lang" not in kw:
-                        kw["languages"] = cfg.languages
-                    if "gpu" not in kw and "use_gpu" not in kw:
-                        kw["gpu"] = True
-                        kw["use_gpu"] = True
-                    return kw
+            # This is the key: two separate, dedicated pools that run concurrently.
+            with Pool(processes=self.config.num_workers, initializer=configure_worker_logging,initargs=(self.config.log_queue,)) as render_pool, \
+                 Pool(processes=self.config.num_gpu_workers, 
+                      initializer=initialize_gpu_worker, 
+                      initargs=(self.config.log_queue,self.config.ocr_backend, self.config.ocr_backend_kwargs)) as gpu_pool:
 
-                backend_kwargs = _build_backend_kwargs(self.config)
+                # --- STAGE 4a: Submit CPU Rendering Jobs ---
+                # The main process streams rendering tasks to the render_pool.
+                render_iterator = render_pool.imap_unordered(worker_render_text_page, text_render_queue, chunksize=16)
+                
+                async_gpu_results = []
+                image_batch_buffer = []; meta_batch_buffer = []
 
-                with Pool(
-                    processes=self.config.num_gpu_workers,
-                    initializer=initialize_gpu_worker,
-                    initargs=(self.config.ocr_backend, backend_kwargs),
-                ) as gpu_pool:
-                    render_iterator = render_pool.imap_unordered(
-                        worker_render_text_page, text_render_queue, chunksize=16
-                    )
+                # This loop consumes results from the render_pool as they become available.
+                for result in tqdm(render_iterator, total=len(text_render_queue), desc="Rendering Pages (CPU)"):
+                    if result.get("error"):
+                        self._log_error(result["source_path"], result["error"]); continue
+                    
+                    perf_tracker.add_cpu_time(result["source_path"], result.get("duration_seconds", 0.0))
+                    
+                    image_batch_buffer.append(result["temp_path"])
+                    meta_batch_buffer.append(result)
 
-                    async_gpu_results: List[Any] = []
-                    image_batch_buffer: List[str] = []
-                    meta_batch_buffer: List[Dict] = []
-
-                    total_to_render = len(text_render_queue)
-                    rendered_so_far = 0
-
-                    for result in tqdm(render_iterator, total=total_to_render, desc="Rendering Pages (CPU)"):
-                        if result.get("error"):
-                            self._log_error(result["source_path"], result["error"])
-                            continue
-
-                        perf_tracker.add_cpu_time(result["source_path"], result.get("duration_seconds", 0.0))
-
-                        image_batch_buffer.append(result["temp_path"])
-                        meta_batch_buffer.append(result)
-                        rendered_so_far += 1
-
-                        # progress from 10 to 90 based on rendering percent
-                        if total_to_render > 0:
-                            rp = 100.0 * rendered_so_far / total_to_render
-                            pct = 10 + 0.8 * rp
-                            pct = max(10.0, min(90.0, pct))
-                            logger.progress("rendering", extra={"phase": "render", "pct": pct})
-
-                        if len(image_batch_buffer) >= self.config.gpu_batch_size:
-                            job = gpu_pool.apply_async(process_gpu_batch, (image_batch_buffer,))
-                            async_gpu_results.append((job, meta_batch_buffer))
-                            image_batch_buffer, meta_batch_buffer = [], []
-
-                    if image_batch_buffer:
+                    # When the buffer is full, submit it to the GPU pool asynchronously.
+                    if len(image_batch_buffer) >= self.config.gpu_batch_size:
                         job = gpu_pool.apply_async(process_gpu_batch, (image_batch_buffer,))
                         async_gpu_results.append((job, meta_batch_buffer))
+                        image_batch_buffer, meta_batch_buffer = [], []
 
-                    # STAGE 4b: aggregate GPU results
-                    logger.info("Aggregating GPU results")
-                    logger.progress("aggregate start", extra={"phase": "aggregate", "pct": 92})
+                # Submit the final, partial batch to the GPU pool
+                if image_batch_buffer:
+                    job = gpu_pool.apply_async(process_gpu_batch, (image_batch_buffer,))
+                    async_gpu_results.append((job, meta_batch_buffer))
 
-                    for job, meta_data in tqdm(async_gpu_results, desc="Aggregating Batches"):
-                        try:
-                            ocr_texts, gpu_duration = job.get()
-                        except Exception as e:
-                            for meta in meta_data:
-                                self._log_error(meta["source_path"], f"GPU batch failed, {e}")
-                            ocr_texts, gpu_duration = [""] * len(meta_data), 0.0
+                # --- STAGE 4b: Asynchronous Aggregation of GPU Results ---
+                # While the main process managed the CPU renderers, the GPU pool was working.
+                # Now, we wait for all the submitted GPU jobs to complete.
+                logger.info("Aggregating GPU results")
+                logger.progress("aggregate start", extra={"phase": "aggregate", "pct": 92})
 
-                        perf_tracker.attribute_gpu_batch_time(meta_data, gpu_duration)
+                for job, meta_data in tqdm(async_gpu_results, desc="Aggregating Batches"):
+                    try:
+                        ocr_texts, gpu_duration = job.get()
+                    except Exception as e:
+                        for meta in meta_data: self._log_error(meta["source_path"], f"GPU batch failed: {e}")
+                        ocr_texts, gpu_duration = [""] * len(meta_data), 0.0
 
-                        for i, text in enumerate(ocr_texts):
-                            meta = meta_data[i]
-                            progress_tracker[meta["source_path"]][meta["page_num"]] = {
-                                "type": "text",
-                                "data": text,
-                            }
+                    perf_tracker.attribute_gpu_batch_time(meta_data, gpu_duration)
 
-                        # cleanup
-                        for meta in meta_data:
-                            p = Path(meta["temp_path"])
-                            try:
-                                if p.exists():
-                                    p.unlink()
-                            except Exception as e:
-                                self._log_error(meta["source_path"], f"Temp cleanup failed, {e}")
-
+                    # Update the shared progress tracker with the OCR'd text
+                    for i, text in enumerate(ocr_texts):
+                        meta = meta_data[i]
+                        progress_tracker[meta["source_path"]][meta["page_num"]] = {"type": "text", "data": text}
+                    
+                    # Cleanup temp files for this batch
+                    for meta in meta_data:
+                        try: Path(meta["temp_path"]).unlink(missing_ok=True)
+                        except Exception as e: self._log_error(meta["source_path"], f"Temp cleanup failed: {e}")
             # STAGE 5: final write
             logger.info("Aggregating and writing final results")
             logger.progress("final write", extra={"phase": "final", "pct": 99})
