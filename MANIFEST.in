@@ -1,1 +1,2 @@
-recursive-include src/paraocr vi_full.txt
+recursive-include src/paraocr/ocr_backends *.py
+include src/paraocr/vi_full.txt

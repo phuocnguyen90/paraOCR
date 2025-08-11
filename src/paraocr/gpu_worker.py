@@ -7,18 +7,24 @@ import importlib
 
 _engine = None
 
-def _import_obj(dotted_path: str):
-    mod_path, _, obj_name = dotted_path.rpartition(".")
+def _import_obj(dotted: str):
+    mod_path, _, attr = dotted.rpartition(".")
+    if not mod_path or not attr:
+        raise ImportError(f"Invalid backend path: {dotted}")
     mod = importlib.import_module(mod_path)
-    return getattr(mod, obj_name)
+    return getattr(mod, attr)
 
-def initialize_gpu_worker(backend_path: str, backend_kwargs: Dict[str, Any]):
-    """Called once per process. Creates one engine instance in global state."""
-    global _engine
+def initialize_gpu_worker(backend_path: str, backend_kwargs: dict):
     print(f"Initializing GPU worker with backend {backend_path} in PID {os.getpid()}...")
-    EngineCls = _import_obj(backend_path)
-    _engine = EngineCls(**(backend_kwargs or {}))
-    print(f"GPU worker ready in PID {os.getpid()}.")
+    try:
+        EngineCls = _import_obj(backend_path)
+    except Exception as e:
+        print(f"[Init Error] Cannot import backend {backend_path}: {e}")
+        raise
+    global ocr_engine
+    ocr_engine = EngineCls(**backend_kwargs)
+    print(f"GPU worker ready in PID {os.getpid()}")
+
 
 def process_gpu_batch(image_paths: List[str]) -> Tuple[List[str], float]:
     global _engine

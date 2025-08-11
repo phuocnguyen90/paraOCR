@@ -8,7 +8,7 @@ setup(
     name="paraocr",
     version="2.0.1",
     package_dir={"": "src"},
-    packages=find_packages(where="src"),
+    packages=find_packages(where="src", include=["paraocr", "paraocr.*"]),
     author="Phuoc Nguyen",
     description="A high-performance, parallel OCR library for processing local files.",
     long_description=long_description,
