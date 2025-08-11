@@ -130,6 +130,34 @@ class UILogger:
         if "Rendering Pages (CPU):" in l or "Aggregating Batches:" in l:
             return l
         return None
+    
+from collections import defaultdict
+from dataclasses import dataclass
+
+def _to_int_or_none(v):
+    try:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int, float)):
+            # guard NaN
+            return None if (isinstance(v, float) and (v != v)) else int(v)
+        s = str(v).strip()
+        if not s:
+            return None
+        return int(float(s))
+    except Exception:
+        return None
+
+@dataclass
+class PhaseWindow:
+    done: int = 0
+    total: int | None = None
+    started_at: float = 0.0
+    ewma_secs_per_item: float | None = None  # smoothed duration
+    _last_beat_time: float = 0.0
+    _last_done_seen: int = 0
 
 class PhaseTracker:
     """
@@ -137,52 +165,103 @@ class PhaseTracker:
     """
     def __init__(self):
         self.start_time = time.perf_counter()
-        self.phase = "Starting"
-
+        self.phase_key = "scan"
+        self.phase_name = "Starting"
+        self._last_eta_text = ""
         self._last_eta_update = 0.0
         self.phase_pct = 0.0
         self.current = None
         self.total = None
+        # tune these to your pipeline proportions
         self.phase_ranges = {
             "scan":      (  2, 10),
             "dispatch":  ( 10, 30),
-            "render":    ( 30, 85),
-            "aggregate": ( 85, 95),
+            "render":    ( 30, 40),
+            "aggregate": ( 40, 95),
             "final":     ( 95, 99),
             "done":      (100,100),
         }
+        
+
+        self.phases: dict[str, PhaseWindow] = defaultdict(PhaseWindow)
+
+    def _enter_phase_if_needed(self, key: str):
+        if key != self.phase_key:
+            self.phase_key = key
+            self.phase_name = key.replace("_", " ").title()
+            w = self.phases[key]
+            if not w.started_at:
+                now = time.perf_counter()
+                w.started_at = now
+                w._last_beat_time = now
+                w._last_done_seen = 0
 
 
-    def update_from_event(self, event: Dict):
-        phase_raw = event.get("phase", self.phase) or self.phase
-        self.phase = phase_raw.replace("_", " ").title()
+    def update_from_event(self, e: dict):
+        key = (e.get("phase") or self.phase_key or "scan").lower()
+        self._enter_phase_if_needed(key)
+        w = self.phases[key]
 
-        # Store counts if present
-        self.current = event.get("current", self.current)
-        self.total   = event.get("total",   self.total)
+        # coerce totals
+        tot = _to_int_or_none(e.get("total"))
+        if tot is not None and tot >= 0:
+            w.total = tot
 
-        # If explicit pct is provided, prefer it
-        pct = event.get("pct", None)
-        if isinstance(pct, (int, float)):
-            self.phase_pct = float(pct)
+        # coerce current and update EWMA using deltas between beats
+        cur = _to_int_or_none(e.get("current"))
+        if cur is not None and cur >= 0:
+            now = time.perf_counter()
+            delta_items = max(0, cur - w._last_done_seen)
+            delta_time = max(1e-6, now - (w._last_beat_time or now))
+            if delta_items > 0:
+                inst = delta_time / float(delta_items)  # secs per item for this beat
+                alpha = 0.25
+                w.ewma_secs_per_item = inst if w.ewma_secs_per_item is None else (
+                    alpha * inst + (1 - alpha) * w.ewma_secs_per_item
+                )
+                w._last_done_seen = cur
+                w._last_beat_time = now
+            w.done = cur  # always reflect latest done
+
+        # explicit pct still takes precedence
+        if isinstance(e.get("pct"), (int, float)):
+            self.phase_pct = float(e["pct"])
             return
 
-        # Otherwise, derive pct from phase + counts
-        key = (phase_raw or "").lower()
+        # derive pct from phase range + counts
         lo, hi = self.phase_ranges.get(key, (0, 100))
-        if self.current is not None and self.total:
-            frac = max(0.0, min(1.0, float(self.current) / float(self.total)))
+        if w.total and w.total > 0:
+            frac = max(0.0, min(1.0, w.done / w.total))
             self.phase_pct = lo + (hi - lo) * frac
+        else:
+            self.phase_pct = float(lo)
+    
+    def _eta_for_phase(self, key: str) -> str:
+        w = self.phases[key]
+        if not (w.total and w.ewma_secs_per_item is not None):
+            return ""
+        remaining = max(0, w.total - w.done)
+        secs_left = remaining * max(0.0, w.ewma_secs_per_item)
+
+        now = time.perf_counter()
+        if now - self._last_eta_update < 0.5 and self._last_eta_text:
+            return self._last_eta_text
+
+        mins, secs = divmod(int(secs_left + 0.5), 60)
+        txt = f"ETA {mins}m {secs}s" if mins else f"ETA {secs}s"
+        self._last_eta_text = txt
+        self._last_eta_update = now
+        return txt
 
     def get_description(self) -> str:
-        eta = self._get_eta_text()
-        extra = []
-        if self.current is not None and self.total:
-            extra.append(f"{int(self.current)}/{int(self.total)}")
+        w = self.phases[self.phase_key]
+        parts = [self.phase_name]
+        if w.total is not None:
+            parts.append(f"{w.done}/{w.total}")
+        eta = self._eta_for_phase(self.phase_key)
         if eta:
-            extra.append(eta)
-        suffix = (" | " + " — ".join(extra)) if extra else ""
-        return f"{self.phase}{suffix}"
+            parts.append(eta)
+        return " | ".join(parts)
     
     
     def get_percent(self) -> float:
@@ -306,19 +385,102 @@ def pipeline_worker(config: OCRConfig):
         logger = logging.getLogger("paraocr")
         logger.critical("---  PIPELINE CRASHED  ---", exc_info=True)
 
-def run_ocr_task(storage_choice, input_method, zip_file, multi_files, gdrive_path, langs, log_mode):
+def run_ocr_task(
+    pdf_paths: List[Path],
+    *,
+    languages,
+    log_mode,
+    num_workers,
+    num_gpu_workers,
+    gpu_batch_size,
+    cpu_chunk_size,
+):
     """
-    Streams UI updates by tailing a session log file written by the pipeline.
+    Streams UI updates by draining in-memory UI queues that the logging listener fills.
+    Expects `pdf_paths` to already be a list of PDF Paths (ZIPs expanded by the WebUI).
     """
-    # --- 1. Setup Queues and the Logging Listener ---
-    text_ui_queue = Queue()
-    event_ui_queue = Queue()
+    import time, traceback, shutil, logging, dataclasses
+    from queue import Queue as ThreadQueue, Empty
+    from threading import Thread
+    from multiprocessing import Manager
+    from pathlib import Path as _Path
+
+    # Local imports to avoid circulars on module load
+    from .ui_utils import pick_workspace, render_progress_html, scan_for_results, PhaseTracker, in_colab
+
+    # --- helpers --------------------------------------------------------------
+
+    def _build_config(cfg_dict: dict):
+        """
+        Construct a real OCRConfig instance, filtering unknown keys so `from_dict` won't fail.
+        Falls back to direct constructor if needed. Guarantees attributes like `pdf_engine` exist.
+        """
+        from .config import OCRConfig  # must exist in your project
+
+        # Determine allowable field names
+        try:
+            if dataclasses.is_dataclass(OCRConfig):
+                field_names = {f.name for f in dataclasses.fields(OCRConfig)}
+            elif hasattr(OCRConfig, "__annotations__"):
+                field_names = set(OCRConfig.__annotations__.keys())
+            else:
+                field_names = set(cfg_dict.keys())
+        except Exception:
+            field_names = set(cfg_dict.keys())
+
+        filtered = {k: v for k, v in cfg_dict.items() if k in field_names}
+
+        # If pdf_engine is a field but absent, set a safe default
+        if "pdf_engine" in field_names and "pdf_engine" not in filtered:
+            filtered["pdf_engine"] = "pymupdf"  # safe default; adjust if your project uses another
+
+        # Try from_dict first for proper type coercions; then fall back to kwargs
+        if hasattr(OCRConfig, "from_dict"):
+            try:
+                return OCRConfig.from_dict(filtered)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        try:
+            return OCRConfig(**filtered)
+        except Exception as e:
+            # As a last resort, create a simple object with attribute access
+            from types import SimpleNamespace
+            # Ensure pdf_engine is present
+            cfg = filtered.copy()
+            cfg.setdefault("pdf_engine", "pymupdf")
+            return SimpleNamespace(**cfg)
+
+    def _pipeline_entry(config):
+        """
+        Wrapper to ensure the Thread target is a function, not the OCRRunner class itself.
+        Discovers tasks from the config.input_dir and runs the pipeline.
+        """
+        from .parallel import OCRRunner
+        from .models import OCRTask
+
+        in_dir = _Path(config.input_dir)
+        # Discover PDFs (you can add image types if needed)
+        allowed = {".pdf"}
+        tasks = [OCRTask(source_path=p) for p in sorted(in_dir.rglob("*")) if p.is_file() and p.suffix.lower() in allowed]
+
+        runner = OCRRunner(config)
+        runner.run(tasks)
+
+    # --- 1) UI Queues & tracker ------------------------------------------------
+
+    text_ui_queue: ThreadQueue[str] = ThreadQueue()
+    event_ui_queue: ThreadQueue[dict] = ThreadQueue()
 
     tracker = PhaseTracker()
     log_history = ""
 
     try:
-        # --- 2. Setup Workspace & Inputs ---
+        # --- 2) Workspace & input prep ----------------------------------------
+        if in_colab():
+            storage_choice = "Google Drive" if Path("/content/drive/MyDrive").exists() else "Colab Temporary"
+        else:
+            storage_choice = "Local"
+
         base, input_dir, output_dir, notice = pick_workspace(storage_choice)
         if notice:
             log_history += f"{notice}\n"
@@ -326,83 +488,133 @@ def run_ocr_task(storage_choice, input_method, zip_file, multi_files, gdrive_pat
         run_ts = time.strftime("%Y%m%d-%H%M%S")
         current_input_dir = input_dir / run_ts
         current_input_dir.mkdir(parents=True, exist_ok=True)
+
         output_jsonl_path = output_dir / f"results_{run_ts}.jsonl"
         error_log_path = output_dir / f"errors_{run_ts}.jsonl"
         session_log_path = output_dir / f"run_{run_ts}.log"
 
-        log_history += prepare_input_directory(input_method, zip_file, multi_files, gdrive_path, current_input_dir)
+        # Copy given PDFs into this run's input dir
+        pdf_paths = [p if isinstance(p, _Path) else _Path(p) for p in (pdf_paths or [])]
+        pdf_paths = [p for p in pdf_paths if p.suffix.lower() == ".pdf" and p.exists()]
+        if not pdf_paths:
+            log_history += "No PDFs found in the provided paths.\n"
+            yield {"log": log_history, "progress_html": render_progress_html(0, "No input")}
+            return
 
-        # --- 3. Configure and START the Logging System ---
-        import logging
-        from multiprocessing import Manager
-        log_queue = Manager().Queue(-1) # The process-safe queue
-        level = logging.DEBUG if log_mode == "Advanced" else logging.INFO
+        log_history += f"Preparing {len(pdf_paths)} PDF(s) for processing...\n"
+        for p in pdf_paths:
+            dst = current_input_dir / p.name
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(p, dst)
+            except Exception:
+                shutil.copy(p, dst)
+        log_history += "Input preparation complete.\n"
 
+        # --- 3) Logging system wiring -----------------------------------------
+        log_queue = Manager().Queue(-1)  # process-safe queue
+        level = logging.DEBUG if (log_mode or "Basic") == "Advanced" else logging.INFO
+
+        from .logger import setup_logging
         listener = setup_logging(
             log_queue=log_queue,
             text_ui_queue=text_ui_queue,
             event_ui_queue=event_ui_queue,
             level=level,
-            file_path=session_log_path
+            file_path=session_log_path,
         )
         listener.start()
-        # Get a logger instance for the main UI thread
-        logger = logging.getLogger("paraocr")
-        logger.info("Workspace: %s", base)
-        logger.info("Starting OCR with languages: %s", ", ".join(langs or ["vi", "en"]))
 
-        # --- 4. Start the Pipeline ---
-        config = OCRConfig.from_dict({
+        logger = logging.getLogger("paraocr")
+        langs = languages or ["vi", "en"]
+        logger.info("Workspace: %s", base)
+        logger.info("Starting OCR with languages: %s", ", ".join(langs))
+        logger.progress("scan start", extra={"phase": "scan", "pct": 2})
+
+        # --- 4) Build config & start pipeline thread --------------------------
+        cfg_dict = {
             "input_dir": str(current_input_dir),
             "output_path": str(output_jsonl_path),
             "error_log_path": str(error_log_path),
             "export_txt": True,
-            "num_workers": 2,
-            "num_gpu_workers": 1,
-            "gpu_batch_size": 8,
+            "num_workers": int(num_workers),
+            "num_gpu_workers": int(num_gpu_workers),
+            "gpu_batch_size": int(gpu_batch_size),
             "dpi": 200,
-            "languages": langs or ["vi", "en"],
-            "dictionary": load_dictionary(),
+            "languages": langs,
+            "dictionary": {},  # will be set via load_dictionary if OCRConfig supports it
             "log_queue": log_queue,
-        })
-        pipeline_thread = Thread(target=pipeline_worker, args=(config,), daemon=True)
+            "cpu_chunk_size": int(cpu_chunk_size),
+        }
+
+        # Provide dictionary if your config expects it
+        try:
+            from .utils import load_dictionary
+            cfg_dict["dictionary"] = load_dictionary()
+        except Exception:
+            pass
+
+        config = _build_config(cfg_dict)
+
+        # ensure required Path-like attributes exist (some pipelines expect Path objects)
+        try:
+            if hasattr(config, "output_path"):
+                setattr(config, "output_path", _Path(getattr(config, "output_path")))
+            if hasattr(config, "error_log_path"):
+                setattr(config, "error_log_path", _Path(getattr(config, "error_log_path")))
+        except Exception:
+            pass
+
+        pipeline_thread = Thread(target=_pipeline_entry, args=(config,), daemon=True)
         pipeline_thread.start()
 
-        # --- 5. Main UI Update Loop ---
-        # This loop pulls from the thread-safe UI queues populated by the listener.
+        # --- 5) UI loop: drain queues & emit updates --------------------------
         while pipeline_thread.is_alive():
-            # Drain the text queue for the log box
-            while not text_ui_queue.empty():
-                log_history += text_ui_queue.get_nowait() + "\n"
-            
-            # Drain the event queue for the progress bar
-            while not event_ui_queue.empty():
-                event = event_ui_queue.get_nowait()
-                tracker.update_from_event(event)
+            # drain text logs
+            try:
+                while True:
+                    log_history += text_ui_queue.get_nowait() + "\n"
+            except Empty:
+                pass
+            # drain progress events
+            try:
+                while True:
+                    event = event_ui_queue.get_nowait()
+                    tracker.update_from_event(event)
+            except Empty:
+                pass
 
             pct = tracker.get_percent()
             desc = tracker.get_description()
-            eta = tracker._get_eta_text()
+            try:
+                eta = tracker._get_eta_text()  # optional
+            except Exception:
+                eta = ""
 
-            # Yield a single, consolidated update
+            label = f"{desc}{(' — ' + eta) if eta else ''}"
             yield {
                 "log": log_history,
-                "progress_html": render_progress_html(pct, f"{desc}{' — ' + eta if eta else ''}")
+                "progress_html": render_progress_html(pct, label),
             }
-            time.sleep(0.2) # UI update frequency
+            time.sleep(0.2)
 
         pipeline_thread.join()
-        listener.stop() # IMPORTANT: Stop the listener thread
+        listener.stop()
 
-        # --- 6. Finalization after thread completion ---
-        while not text_ui_queue.empty():
-            log_history += text_ui_queue.get_nowait() + "\n"
-        while not event_ui_queue.empty():
-            tracker.update_from_event(event_ui_queue.get_nowait())
+        # --- 6) Final drain ----------------------------------------------------
+        try:
+            while True:
+                log_history += text_ui_queue.get_nowait() + "\n"
+        except Empty:
+            pass
+        try:
+            while True:
+                tracker.update_from_event(event_ui_queue.get_nowait())
+        except Empty:
+            pass
 
-        # --- 7. Scan for results and yield the final UI state ---
+        # --- 7) Results --------------------------------------------------------
         log_history += "\n✅ Processing complete. Scanning for results...\n"
-        
         results_df = scan_for_results(output_jsonl_path)
         if results_df.empty:
             log_history += "⚠️ No results found. Check the log for errors.\n"
@@ -410,13 +622,131 @@ def run_ocr_task(storage_choice, input_method, zip_file, multi_files, gdrive_pat
             log_history += f"✨ Found {len(results_df)} processed documents. Displaying below.\n"
 
         yield {
-            "log": log_history, 
-            "results": results_df, 
-            "progress_html": render_progress_html(100, "Done")
+            "log": log_history,
+            "results": results_df,
+            "progress_html": render_progress_html(100, "Done"),
         }
-
-
 
     except Exception:
         log_history += "\n[UI Error]\n" + traceback.format_exc() + "\n"
         yield {"log": log_history, "progress_html": render_progress_html(0, "Error")}
+
+
+# webui.py (top; or utils.py and import)
+def _in_colab() -> bool:
+    return "google.colab" in sys.modules
+
+def _cpu_core_count() -> int:
+    try:
+        return os.cpu_count() or 2
+    except Exception:
+        return 2
+
+def _gpu_total_vram_gb() -> float:
+    """
+    Returns total available VRAM across visible CUDA devices in GiB.
+    Prefers torch if available; falls back to nvidia-smi parsing.
+    """
+    # Try torch first
+    try:
+        import torch
+        if torch.cuda.is_available():
+            total = 0.0
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                total += props.total_memory / (1024**3)  # bytes -> GiB
+            return total
+    except Exception:
+        pass
+
+    # Fallback: nvidia-smi
+    try:
+        import subprocess, json
+        cmd = [
+            "nvidia-smi",
+            "--query-gpu=memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+        vals = [float(x.strip()) for x in out.splitlines() if x.strip()]
+        # nvidia-smi returns MiB; convert to GiB
+        return sum(vals) / 1024.0 if vals else 0.0
+    except Exception:
+        return 0.0
+
+def _suggest_defaults():
+    colab = _in_colab()
+    cpu = _cpu_core_count()
+    vram = _gpu_total_vram_gb()
+    # 1 GPU worker per ~4 GiB VRAM, minimum 0 if no GPU
+    gpu_workers = int(max(0, math.floor(vram / 4.0)))
+
+    if colab:
+        # Your requested Colab baseline
+        cpu_workers = 2
+        gpu_workers = max(gpu_workers, 1)  # if there is *some* GPU
+    else:
+        # Your requested local baseline (bounded by cores/VRAM)
+        cpu_workers = min(max(4, 1), cpu)  # at least 4 if available
+        # If VRAM is tiny, keep at 0/1
+        gpu_workers = max(min(gpu_workers, 2), 0)
+
+    # Reasonable batch sizes; tweak to taste
+    gpu_batch_size = 4 if gpu_workers <= 1 else 8
+    cpu_chunk_size = 16
+
+    return {
+        "cpu_workers": max(1, min(cpu_workers, cpu)),
+        "gpu_workers": gpu_workers,
+        "gpu_batch_size": gpu_batch_size,
+        "cpu_chunk_size": cpu_chunk_size,
+        "vram_gb": round(vram, 2),
+        "cpu_cores": cpu,
+        "env": "Colab" if colab else "Local",
+    }
+
+def _is_zip(path: str | Path) -> bool:
+    try:
+        return zipfile.is_zipfile(path)
+    except Exception:
+        return False
+    
+def _collect_inputs(uploaded_files, session_tmpdir: Path) -> list[Path]:
+    """
+    Accepts a list of gradio UploadedFiles OR a single one.
+    Expands ZIPs into session_tmpdir and returns a flat list of PDF Paths.
+    """
+    if not uploaded_files:
+        return []
+
+    if not isinstance(uploaded_files, (list, tuple)):
+        uploaded_files = [uploaded_files]
+
+    pdfs: list[Path] = []
+    for f in uploaded_files:
+        p = Path(getattr(f, "name", f))
+        if _is_zip(p):
+            with zipfile.ZipFile(p, "r") as zf:
+                # Extract only PDFs; ignore other noise
+                for zi in zf.infolist():
+                    if zi.is_dir():
+                        continue
+                    if str(zi.filename).lower().endswith(".pdf"):
+                        target = session_tmpdir / Path(zi.filename).name
+                        with zf.open(zi) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        pdfs.append(target)
+        else:
+            # If a single PDF or other file — only accept PDFs
+            if p.suffix.lower() == ".pdf":
+                # Copy into session dir to isolate lifecycle
+                target = session_tmpdir / p.name
+                if str(p) != str(target):
+                    try:
+                        shutil.copy2(p, target)
+                    except Exception:
+                        shutil.copy(p, target)
+                pdfs.append(target)
+    # De‑dupe and sort for stability
+    pdfs = sorted(set(pdfs), key=lambda x: x.name)
+    return pdfs
