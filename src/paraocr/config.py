@@ -37,7 +37,7 @@ class OCRConfig:
     force_rerun: bool = False
 
     temp_dir: Path = Path(tempfile.gettempdir()) / "paraOCR_temp"
-    export_txt: bool = False
+    export_txt: bool = True # Change default export to text to True for UX
     log_performance: bool = False
     performance_log_path: Path = Path("paraOCR_performance_log.jsonl")   
 

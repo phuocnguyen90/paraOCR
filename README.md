@@ -2,9 +2,9 @@
 
 **A high-performance, parallel pipeline for batch OCR processing of local files.**
 
-`paraOCR` is a Python command-line tool for running high-quality OCR on large collections of local files — PDFs, PNGs, JPEGs — as quickly and efficiently as your hardware allows. It builds on the `easyocr` library, but adds what’s missing: true batch processing, a parallel architecture that speeds up even single large files, and practical features for real-world use.
+`paraOCR` is a Python library for high-throughput OCR on large collections of files—PDFs, PNGs, JPEGs—at the speed your hardware allows. Built around EasyOCR, it adds production-grade features such as true batch processing, a parallel CPU/GPU architecture, and detailed logging.
 
-EasyOCR is great, but it doesn’t natively handle running through hundreds or thousands of documents in one go. After years of seeing no one turn it into a production-ready tool, I decided to do it myself. `paraOCR` supports batch processing, parallel execution, pause-and-resume, and even a web UI so you can run it easily on Google Colab.
+Originally CLI-first, it now also ships with a Web UI for ease of use. After installing the library, launch it from the CLI with `paraocr webui` (or `python -m paraocr.cli webui`).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -14,7 +14,7 @@ EasyOCR is great, but it doesn’t natively handle running through hundreds or t
 -   **Multiple Concurrent GPU Workers:** Fully utilizes high-VRAM GPUs by running multiple OCR engines at once.
 -   **Low & Stable RAM Usage:** A true streaming pipeline design ensures that even massive datasets can be processed without running out of system memory.
 -   **Resumable & Robust:** The pipeline is fully resumable and gracefully handles corrupted files by logging them instead of crashing.
--   **Extensible Architecture:** Designed with hooks for future content-aware processors (e.g., table and image extraction).
+-   **Extensible Architecture:** Pluggable, content-aware processors (e.g., table and image extraction) with support for multiple OCR backends—LLM-assisted OCR on the roadmap.
 -   **Detailed Performance Logging:** An optional flag generates a detailed performance log to help you tune parameters and identify bottlenecks.
 
 
@@ -125,7 +125,38 @@ The script produces a JSON Lines (`.jsonl`) file, where each line is a JSON obje
 }
 ```
 
-## Benchmarking & Optimization
+## Web UI
+Launch the UI (local):
+```bash
+paraocr webui
+# or explicitly host:
+paraocr webui --server-name 0.0.0.0 --server-port 7860
+```
+In Google Colab (public share link):
+
+```bash
+!pip install -U git+https://github.com/phuocnguyen90/paraOCR.git
+!paraocr webui --share
+```
+
+Alternatively, launch as a module or call the function:
+```bash
+python -m paraocr.cli webui --share
+```
+or inside Python:
+```python
+from paraocr.webui import launch_webui
+launch_webui()
+```
+
+### Web UI Basics
+Upload PDFs or a ZIP (ZIPs auto-expand).
+
+Settings → adjust CPU workers, GPU workers, GPU batch size, CPU chunk size.
+
+Start → watch live logs and progress/ETA; results appear in a table; click a row to preview text.
+
+## Optimization
 
 paraOCR includes a detailed performance logging feature to help you tune parameters for your specific hardware and dataset.
 
@@ -147,39 +178,35 @@ This will create a `paraOCR_performance_log.jsonl` file with structured timing d
 
 **Q: How do I choose the right number of GPU workers `(--gpu-workers`)**
 
-**A:**  This is the most important new setting for performance. It depends entirely on your GPU's VRAM. Each GPU worker loads its own copy of the EasyOCR model into memory.
-
-**Rule of Thumb:** Based on testing, a single GPU worker at 200 DPI and a batch size of 16 consumes approximately 4 GB of VRAM.
+**A:**  Aach worker loads its own model; ~4 GB VRAM/worker is a good rule of thumb. If you see OOM, reduce batch size or workers..
 
 **Q: The script is running, but my GPU utilization is low or has sharp peaks and valleys.**
 
-**A:** This is the classic sign of a **CPU bottleneck**. Your CPU cores cannot prepare images (render PDFs) fast enough to keep the GPU continuously fed.
-*   **Solution 1 (Recommended):** Increase the number of CPU workers with the `-w` or `--workers` argument (e.g., `-w 10`).
-*   **Solution 2:** Decrease the rendering complexity by using a lower `--dpi` (e.g., `-d 150`). This is a trade-off between speed and quality.
+**A:** Likely CPU-bound—raise `--workers` or lower `--dpi`.
 
 **Q: I ran out of GPU memory (VRAM).**
 
-**A:** This happens when the batch of images is too large to fit in your GPU's memory.
-*   **Solution:** Decrease the GPU batch size with the `-b` or `--gpu-batch-size` argument (e.g., `-b 8` or `-b 4`). High-DPI images consume significantly more VRAM.
+**A:** This happens when the batch of images is too large to fit in your GPU's memory. Lower `--gpu-batch-size` (e.g., 8 → 4).
 
-**Q: I ran out of system memory (RAM).**
-
-**A:** This should not happen with the current architecture. If it does, it means you are processing an extremely large number of files and the tracking objects are growing too large. Please open an issue on GitHub. A temporary workaround is to process your data in smaller sub-directories.
-
-**Q: The script fails with a `ModuleNotFoundError` on first run.**
-
-**A:** This usually means the package was not installed correctly.
-*   **Solution:** Ensure you are in the correct virtual environment. Uninstall and reinstall the package:
-    ```bash
-    pip uninstall paraOCR
-    pip install .
-    ```
 
 **Q: How do I handle files that failed to process?**
 
 **A:** The script generates an error log (`paraOCR_error_log.jsonl` by default). This file contains a list of every document that failed and the reason why.
 *   **Common reasons:** "file is corrupted", "format error: No default Layer config".
 *   **Solution:** These files often need to be opened with a tool like Adobe Acrobat and re-saved to fix the corruption, or they may need to be manually reviewed. You can create a targeted second-pass run by pointing paraOCR at a directory containing only these failed files.
+
+**Q: How do I pause/resume the process?**
+
+**CLI:** Press **Ctrl+C** to stop safely. To resume, rerun the **exact same command** (same `--input-dir` and `--output-path`). The runner reads the existing results file and skips anything already processed.
+
+* Want to redo everything? Add `--force-rerun`.
+* If you hard-killed the job and the last JSONL line is truncated, just rerun—the loader is tolerant; worst case, delete the last partial line.
+
+**Web UI:** Resume is not supported yet (WIP). For now, either:
+
+* use the CLI with the same `--output-path` to resume, or
+* re-upload only the files that still need processing.
+
 
 ## Contributing
 
