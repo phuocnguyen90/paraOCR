@@ -1,7 +1,7 @@
 # paraOCR/config.py
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Set, Dict, Any
+from typing import List, Set, Dict, Any, Optional
 import tempfile
 from multiprocessing import cpu_count
 from importlib.resources import files
@@ -53,6 +53,8 @@ class OCRConfig:
     dictionary: Set[str] = field(default_factory=get_default_dictionary)
 
     pdf_engine: str = "pymupdf"
+
+    log_queue: Optional[Any] = None
 
     def to_dict(self):
         """Converts config to a dictionary suitable for multiprocessing (pickling)."""
