@@ -195,9 +195,24 @@ class OCRRunner:
             with Pool(processes=self.config.num_workers) as render_pool:
                 # This inner pool is for GPU-bound OCR tasks.
                 # The `initializer` function is the key: it creates one OCREngine per worker.
+                
+                def _build_backend_kwargs(cfg: OCRConfig) -> Dict[str, Any]:
+                    # prefer explicit kwargs, then overlay languages from cfg
+                    kw = dict(cfg.ocr_backend_kwargs or {})
+                    # only add if not already present
+                    if "languages" not in kw and "lang" not in kw:
+                        kw["languages"] = cfg.languages  # list like ["vi","en"] for EasyOCR, or we map in backend
+                    # if you want GPU hint to be uniform
+                    if "gpu" not in kw and "use_gpu" not in kw:
+                        kw["gpu"] = True
+                        kw["use_gpu"] = True
+                    return kw
+
+                backend_kwargs = _build_backend_kwargs(self.config)
+                
                 with Pool(processes=self.config.num_gpu_workers, 
                           initializer=initialize_gpu_worker, 
-                          initargs=(self.config.ocr_backend, self.config.ocr_backend_kwargs)) as gpu_pool:
+                          initargs=(self.config.ocr_backend, backend_kwargs)) as gpu_pool:
 
                     # --- STAGE 4a: Submit CPU Rendering Jobs ---
                     # The main process streams rendering tasks to the render_pool.

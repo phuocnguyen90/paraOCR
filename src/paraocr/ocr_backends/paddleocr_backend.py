@@ -7,61 +7,48 @@ from paddleocr import PaddleOCR
 
 from .base import BaseOCREngine
 
-class PaddleOCREngine(BaseOCREngine):
-    """
-    Thin adapter over PaddleOCR. Works with your read_batch interface.
-    Notes:
-      lang='en' uses the Latin recognition model which already covers Vietnamese characters.
-      If you have a dedicated Vietnamese model, pass lang='vi'.
-    """
+def _norm_langs_to_paddle(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    # Accept languages or lang, then pick a single Paddle lang
+    langs = kwargs.pop("languages", None) or kwargs.get("lang")
+    if isinstance(langs, list):
+        lang = "vi" if "vi" in langs else langs[0]
+    elif isinstance(langs, str) and langs:
+        lang = langs
+    else:
+        lang = "vi"  # default for your scenario
+    kwargs["lang"] = lang
+    return kwargs
 
-    def __init__(
-        self,
-        lang: str = "en",
-        use_gpu: bool = True,
-        use_angle_cls: bool = False,
-        rec_batch_num: int = 6,
-        **kwargs: Dict[str, Any],
-    ):
-        # PaddleOCR expects BGR images. We convert in read_batch.
-        # show_log=False keeps console quieter for your UI streaming.
+class PaddleOCREngine(BaseOCREngine):
+    def __init__(self, **kwargs: Dict[str, Any]):
+        k = _norm_langs_to_paddle(dict(kwargs))
+        use_angle_cls = k.pop("use_angle_cls", True)
+        rec_batch_num = k.pop("rec_batch_num", 6)
         self.ocr = PaddleOCR(
-            lang=lang,
-            use_gpu=use_gpu,
             use_angle_cls=use_angle_cls,
             rec_batch_num=rec_batch_num,
             show_log=False,
-            **kwargs,
+            **k
         )
 
     def read_batch(self, images: List[np.ndarray]) -> Tuple[List[str], float]:
         start = time.perf_counter()
         texts: List[str] = []
-
         for img in images:
-            # Convert RGB to BGR if needed
             if img.ndim == 3 and img.shape[2] == 3:
                 bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             else:
                 bgr = img
-
-            # Paddle returns list of pages. Each page is a list of lines.
-            # Each line is [box, (text, score)]
             result = self.ocr.ocr(bgr, cls=False)
-
-            lines: List[str] = []
+            lines = []
             if isinstance(result, list):
-                for page in result:
+                for page in result or []:
                     if page is None:
                         continue
                     for line in page:
                         try:
-                            txt = line[1][0]
-                            lines.append(txt)
+                            lines.append(line[1][0])
                         except Exception:
-                            continue
-
+                            pass
             texts.append("\n".join(lines))
-
-        dur = round(time.perf_counter() - start, 6)
-        return texts, dur
+        return texts, round(time.perf_counter() - start, 6)
