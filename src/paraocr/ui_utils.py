@@ -141,16 +141,48 @@ class PhaseTracker:
 
         self._last_eta_update = 0.0
         self.phase_pct = 0.0
+        self.current = None
+        self.total = None
+        self.phase_ranges = {
+            "scan":      (  2, 10),
+            "dispatch":  ( 10, 30),
+            "render":    ( 30, 85),
+            "aggregate": ( 85, 95),
+            "final":     ( 95, 99),
+            "done":      (100,100),
+        }
+
 
     def update_from_event(self, event: Dict):
-        """Updates the tracker's state from a PROGRESS event from the queue."""
-        self.phase = event.get("phase", self.phase).replace("_", " ").title()
-        self.phase_pct = event.get("pct", self.phase_pct)
+        phase_raw = event.get("phase", self.phase) or self.phase
+        self.phase = phase_raw.replace("_", " ").title()
+
+        # Store counts if present
+        self.current = event.get("current", self.current)
+        self.total   = event.get("total",   self.total)
+
+        # If explicit pct is provided, prefer it
+        pct = event.get("pct", None)
+        if isinstance(pct, (int, float)):
+            self.phase_pct = float(pct)
+            return
+
+        # Otherwise, derive pct from phase + counts
+        key = (phase_raw or "").lower()
+        lo, hi = self.phase_ranges.get(key, (0, 100))
+        if self.current is not None and self.total:
+            frac = max(0.0, min(1.0, float(self.current) / float(self.total)))
+            self.phase_pct = lo + (hi - lo) * frac
 
     def get_description(self) -> str:
-        """Calculates and returns the full description string for the progress bar."""
         eta = self._get_eta_text()
-        return f"{self.phase}{' | ' + eta if eta else ''}"
+        extra = []
+        if self.current is not None and self.total:
+            extra.append(f"{int(self.current)}/{int(self.total)}")
+        if eta:
+            extra.append(eta)
+        suffix = (" | " + " — ".join(extra)) if extra else ""
+        return f"{self.phase}{suffix}"
     
     
     def get_percent(self) -> float:

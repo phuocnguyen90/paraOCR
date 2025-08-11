@@ -213,6 +213,7 @@ class OCRRunner:
             # STAGE 2: layout analysis and dispatching
             logger.info("Dispatching tasks for layout analysis")
             logger.progress("dispatch start", extra={"phase": "dispatch", "pct": 10})
+
             tagged_tasks: List[Dict] = []
             with Pool(processes=self.config.num_workers, 
                 initializer=configure_worker_logging, 
@@ -225,9 +226,11 @@ class OCRRunner:
                 for result in tqdm(results_iterator, total=len(page_level_tasks), desc="Analyzing Page Layouts"):
                     tagged_tasks.append(result)
                     dispatched += 1
-                    if total and (dispatched % max(1, total // 20) == 0 or dispatched % 50 == 0):
-                        pct = int(dispatched * 100 / total)
-                        logger.info("Dispatch progress: %d%%", pct)
+                    logger.progress(
+                        "dispatch progress",
+                        extra={"phase": "dispatch", "current": dispatched, "total": total}
+                    )
+                    
 
             # STAGE 3: routing
             text_render_queue = [t for t in tagged_tasks if t.get("processing_type") == "text_ocr"]
@@ -255,7 +258,9 @@ class OCRRunner:
                 "Starting parallel processing with %s GPU workers",
                 self.config.num_gpu_workers,
             )
-            logger.progress("render start", extra={"phase": "render", "pct": 25})
+            logger.progress("render start", extra={"phase": "render", "pct": 30})
+            rendered = 0
+            total_render = len(text_render_queue)
 
             # This is the key: two separate, dedicated pools that run concurrently.
             with Pool(processes=self.config.num_workers, initializer=configure_worker_logging,initargs=(self.config.log_queue,)) as render_pool, \
@@ -279,6 +284,12 @@ class OCRRunner:
                     
                     image_batch_buffer.append(result["temp_path"])
                     meta_batch_buffer.append(result)
+                    rendered += 1
+                    # Granular progress during render
+                    logger.progress(
+                        "render progress",
+                        extra={"phase": "render", "current": rendered, "total": total_render}
+                    )
 
                     # When the buffer is full, submit it to the GPU pool asynchronously.
                     if len(image_batch_buffer) >= self.config.gpu_batch_size:
@@ -295,7 +306,9 @@ class OCRRunner:
                 # While the main process managed the CPU renderers, the GPU pool was working.
                 # Now, we wait for all the submitted GPU jobs to complete.
                 logger.info("Aggregating GPU results")
-                logger.progress("aggregate start", extra={"phase": "aggregate", "pct": 92})
+                logger.progress("aggregate start", extra={"phase": "aggregate", "pct": 85})
+                aggregated = 0
+                total_batches = len(async_gpu_results)
 
                 for job, meta_data in tqdm(async_gpu_results, desc="Aggregating Batches"):
                     try:
@@ -315,9 +328,16 @@ class OCRRunner:
                     for meta in meta_data:
                         try: Path(meta["temp_path"]).unlink(missing_ok=True)
                         except Exception as e: self._log_error(meta["source_path"], f"Temp cleanup failed: {e}")
+
+                    aggregated += 1
+                    logger.progress(
+                        "aggregate progress",
+                        extra={"phase": "aggregate", "current": aggregated, "total": total_batches}
+                    )
+
             # STAGE 5: final write
             logger.info("Aggregating and writing final results")
-            logger.progress("final write", extra={"phase": "final", "pct": 99})
+            logger.progress("final write", extra={"phase": "final", "pct": 95})
             self._write_final_results(dict(progress_tracker), outfile, file_start_times, perf_tracker)
 
             logger.info("Run finished")

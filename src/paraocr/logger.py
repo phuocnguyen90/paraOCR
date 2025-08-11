@@ -118,6 +118,12 @@ def setup_logging(
     # --- Step 2: Create and return the listener ---
     # The listener pulls from the process-safe queue and pushes to the configured handlers.
     listener = QueueListener(log_queue, *handlers, respect_handler_level=True)
+    # 2) **Wire the parent-process logger to the queue**
+    parent_logger = logging.getLogger("paraocr")
+    parent_logger.setLevel(logging.DEBUG)
+    # Ensure we don't have stray handlers here; the listener will fan-out
+    parent_logger.handlers.clear()
+    parent_logger.addHandler(QueueHandler(log_queue))
     return listener
 
 def configure_worker_logging(log_queue: MPQueue):

@@ -19,18 +19,7 @@ from .logger import setup_logging, configure_worker_logging, PROGRESS
 
 def launch_webui():
     # Storage options
-    from queue import Queue
-    text_q, event_q = Queue(), Queue()
-    from paraocr.utils import setup_logging
-    log_mode="Basic"
-    setup_logging(
-        text_queue=text_q,
-        event_queue=event_q,
-        level=(logging.DEBUG if log_mode=="Advanced" else logging.INFO),
-        file_path=session_log_path,
-        file_level=logging.INFO,
-        include_progress_in_file=False,
-    )
+
 
 
     if in_colab():
