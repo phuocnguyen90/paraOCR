@@ -82,3 +82,56 @@ def safe_fname(name: str, fallback: str = "file") -> str:
         return f"{slugify(base)[:100]}.{ext}"
     else:
         return slugify(name)[:100]
+    
+import logging
+
+PROGRESS = 25  # between INFO 20 and WARNING 30
+logging.addLevelName(PROGRESS, "PROGRESS")
+
+def progress(self, msg, *args, **kwargs):
+    if self.isEnabledFor(PROGRESS):
+        self._log(PROGRESS, msg, args, **kwargs)
+logging.Logger.progress = progress  # type: ignore
+
+class QueueTextHandler(logging.Handler):
+    """Plain text log lines to a queue for Advanced log."""
+    def __init__(self, q):
+        super().__init__()
+        self.q = q
+        self.setFormatter(logging.Formatter("%(message)s"))
+    def emit(self, record):
+        try:
+            self.q.put(self.format(record) + "\n")
+        except Exception:
+            pass
+
+class QueueEventHandler(logging.Handler):
+    """Structured events for UI, e.g. progress updates."""
+    def __init__(self, q):
+        super().__init__()
+        self.q = q
+    def emit(self, record):
+        try:
+            evt = {
+                "level": record.levelname,
+                "msg": record.getMessage(),
+                "phase": getattr(record, "phase", None),
+                "pct": getattr(record, "pct", None),
+                "total_pages": getattr(record, "total_pages", None),
+            }
+            self.q.put(evt)
+        except Exception:
+            pass
+
+def setup_logging(text_queue=None, event_queue=None, level=logging.INFO):
+    """Attach handlers to the paraocr logger."""
+    logger = logging.getLogger("paraocr")
+    logger.setLevel(level)
+    logger.handlers[:] = []  # reset
+    if text_queue is not None:
+        logger.addHandler(QueueTextHandler(text_queue))
+    if event_queue is not None:
+        h = QueueEventHandler(event_queue)
+        h.setLevel(PROGRESS)  # only progress events by default
+        logger.addHandler(h)
+    return logger
