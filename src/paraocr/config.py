@@ -72,29 +72,15 @@ class OCRConfig:
             if key in d and isinstance(d[key], str):
                 d[key] = Path(d[key])
 
-
-        # normalize kwargs
-        if "ocr_backend_kwargs" in d and isinstance(d["ocr_backend_kwargs"], str):
-            import json
-            d["ocr_backend_kwargs"] = json.loads(d["ocr_backend_kwargs"])
-
         # allow explicit None to mean use default
         for key in ["num_workers", "gpu_batch_size", "num_gpu_workers", "dpi", "performance_log_path"]:
             if d.get(key) is None:
-                d.pop(key)
-
-        # optional external dictionary path
-        dict_path = d.pop("dictionary_path", None)
-        if dict_path:
-            p = Path(dict_path)
-            if p.exists():
-                d["dictionary"] = {line.strip().lower() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()}
-            elif "dictionary" not in d:
-                d["dictionary"] = set()
+                d.pop(key, None)  # <- safe pop
 
         cfg = cls(**d)
+
+        # if logging is on but no path was provided, pick one next to results
         if cfg.log_performance and not cfg.performance_log_path:
             cfg.performance_log_path = Path(str(cfg.output_path)).with_suffix(".perf.jsonl")
-
 
         return cfg
