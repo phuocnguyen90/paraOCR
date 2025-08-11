@@ -32,7 +32,7 @@ setup(
     entry_points={
         'console_scripts': [
             'paraocr=paraocr.cli:main',
-            "paraOCR-webui=paraocr.webui:launch_webui",
+            "paraocr-webui=paraocr.cli:webui_entry",
         ],
     },
 )
