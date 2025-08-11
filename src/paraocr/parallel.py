@@ -6,7 +6,7 @@ import logging
 import time
 from pathlib import Path
 from typing import List, Dict, Any
-from multiprocessing import Pool, Manager
+import multiprocessing as mp
 from collections import defaultdict
 
 import fitz
@@ -193,8 +193,9 @@ class OCRRunner:
         logger.info("Run started")
         perf_tracker = PerformanceTracker()
         file_start_times: Dict[str, float] = {}
+        ctx = mp.get_context("spawn")
 
-        with Manager() as manager, open(self.config.output_path, "a", encoding="utf-8") as outfile:
+        with ctx.Manager() as manager, open(self.config.output_path, "a", encoding="utf-8") as outfile:
             # STAGE 1: scanning and native text extraction
             logger.progress("scan start", extra={"phase": "scan", "pct": 5})
             page_level_tasks = self._create_page_tasks(tasks, outfile, perf_tracker, file_start_times)
@@ -215,7 +216,7 @@ class OCRRunner:
             logger.progress("dispatch start", extra={"phase": "dispatch", "pct": 10})
 
             tagged_tasks: List[Dict] = []
-            with Pool(processes=self.config.num_workers, 
+            with ctx.Pool(processes=self.config.num_workers, 
                 initializer=configure_worker_logging, 
                 initargs=(self.config.log_queue,)) as dispatch_pool:
                 dispatched = 0
@@ -263,8 +264,8 @@ class OCRRunner:
             total_render = len(text_render_queue)
 
             # This is the key: two separate, dedicated pools that run concurrently.
-            with Pool(processes=self.config.num_workers, initializer=configure_worker_logging,initargs=(self.config.log_queue,)) as render_pool, \
-                 Pool(processes=self.config.num_gpu_workers, 
+            with ctx.Pool(processes=self.config.num_workers, initializer=configure_worker_logging,initargs=(self.config.log_queue,)) as render_pool, \
+                 ctx.Pool(processes=self.config.num_gpu_workers, 
                       initializer=initialize_gpu_worker, 
                       initargs=(self.config.log_queue,self.config.ocr_backend, self.config.ocr_backend_kwargs)) as gpu_pool:
 

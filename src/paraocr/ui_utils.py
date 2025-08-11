@@ -643,36 +643,30 @@ def _cpu_core_count() -> int:
         return 2
 
 def _gpu_total_vram_gb() -> float:
-    """
-    Returns total available VRAM across visible CUDA devices in GiB.
-    Prefers torch if available; falls back to nvidia-smi parsing.
-    """
-    # Try torch first
+    # Prefer nvidia-smi (doesn't init CUDA)
     try:
-        import torch
-        if torch.cuda.is_available():
-            total = 0.0
-            for i in range(torch.cuda.device_count()):
-                props = torch.cuda.get_device_properties(i)
-                total += props.total_memory / (1024**3)  # bytes -> GiB
-            return total
+        import subprocess
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            stderr=subprocess.DEVNULL, text=True)
+        mibs = [float(x.strip()) for x in out.splitlines() if x.strip()]
+        if mibs:
+            return sum(mibs) / 1024.0
     except Exception:
         pass
 
-    # Fallback: nvidia-smi
+    # Fallback to torch (may init CUDA)
     try:
-        import subprocess, json
-        cmd = [
-            "nvidia-smi",
-            "--query-gpu=memory.total",
-            "--format=csv,noheader,nounits",
-        ]
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
-        vals = [float(x.strip()) for x in out.splitlines() if x.strip()]
-        # nvidia-smi returns MiB; convert to GiB
-        return sum(vals) / 1024.0 if vals else 0.0
+        import torch
+        if torch.cuda.is_available():
+            return sum(
+                torch.cuda.get_device_properties(i).total_memory for i in range(torch.cuda.device_count())
+            ) / (1024**3)
     except Exception:
-        return 0.0
+        pass
+    return 0.0
+
+import math
 
 def _suggest_defaults():
     colab = _in_colab()
