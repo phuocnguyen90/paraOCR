@@ -84,7 +84,7 @@ def prewarm():
         from paddleocr import PaddleOCR
         import paddle
         use_gpu = paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0
-        PaddleOCR(use_angle_cls=True, lang="latin", use_gpu=use_gpu, show_log=False)
+        PaddleOCR(use_angle_cls=True, lang="la", use_gpu=use_gpu, show_log=False)
         print(f"  PaddleOCR ready (gpu={use_gpu})")
     except Exception as e:
         print("  PaddleOCR prewarm skipped:", e)

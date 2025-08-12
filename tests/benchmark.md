@@ -25,7 +25,7 @@ here’s a drop-in README section you can paste in.
 * EasyOCR (greedy): \~**1.56×** (181.12 → 116.00 s)
 * PaddleOCR: \~**1.05×** (29.33 → 28.07 s)
 
-> ⚠️ Accuracy note: PaddleOCR’s fastest setting for this dataset used `lang=latin`. It’s very quick but may underperform on Vietnamese accuracy versus engines/models specialized for Vietnamese.
+> ⚠️ Accuracy note: PaddleOCR’s fastest setting for this dataset used `lang=la`. It’s very quick but may underperform on Vietnamese accuracy versus engines/models specialized for Vietnamese.
 
 ---
 

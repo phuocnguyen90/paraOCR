@@ -36,7 +36,7 @@ Originally CLI-first, it now also ships with a Web UI for ease of use. After ins
 **Speedups (paraOCR vs. vanilla):**
 Tesseract **\~2.6×**, EasyOCR **\~1.6×**, PaddleOCR **\~1.05×**.
 
-> Note: PaddleOCR here uses `lang=latin` (fast; Vietnamese accuracy may be lower than VN-specific models).
+> Note: PaddleOCR here uses `lang=la` (fast; Vietnamese accuracy may be lower than VN-specific models).
 
 
 ---

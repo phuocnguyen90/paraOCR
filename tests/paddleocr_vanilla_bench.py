@@ -1,5 +1,5 @@
-# benchmark_vanilla_paddleocr.py
 import numpy as np
+import argparse
 if not hasattr(np, "sctypes"):
     np.sctypes = {
         "float": [np.float16, np.float32, np.float64],
@@ -28,29 +28,26 @@ import cv2
 
 
 # --- CONFIGURATION ---
-# Point this to a directory with a few test files (including the 100-page one)
-INPUT_DIR = Path("tests\data")
-OUTPUT_JSONL = Path("tests\paddleocr_results.jsonl")
+# Default paths and settings
+DEFAULT_INPUT_DIR = Path("tests/data")
+DEFAULT_OUTPUT_JSONL = Path("tests/paddleocr_results.jsonl")
 
 # OCR settings
 LANGUAGES = ["vi", "en"]     # We'll pick a suitable PaddleOCR model from this
 USE_GPU = True               # Will auto-fallback to CPU if CUDA build is unavailable
-TARGET_DPI = 200             # Match your EasyOCR benchmark for apples-to-apples
+TARGET_DPI = 200             # Match your other benchmarks for apples-to-apples
 
 
 def _pick_paddle_lang(langs) -> str:
     """
     PaddleOCR uses a single 'lang' model per Reader.
     This helper picks a reasonable model based on your list.
-    - Vietnamese is best covered by the 'latin' model.
-    - English can use 'en'.
     """
     langs = [s.lower() for s in (langs or [])]
     if "vi" in langs:
         return "latin"
     if "en" in langs:
         return "en"
-    # Fallbacks (customize as needed)
     if any(l in langs for l in ("fr", "de", "es", "it", "pt")):
         return "latin"
     return "en"
@@ -84,33 +81,53 @@ def _pil_to_cv_bgr(im: Image.Image) -> np.ndarray:
 
 def _serialize_paddle_result(paddle_result) -> list[dict]:
     """
-    PaddleOCR.ocr(img, cls=True) returns:
-      [ [ [box_points, (text, conf)], ... ] ]
-    We convert inner list to: [{"text": str, "confidence": float, "bbox": [[x,y],...]}]
+    Convert PaddleOCR's complex output structure to a simple list of dicts.
     """
     lines = []
     if not paddle_result:
         return lines
-    # Handle both single-image and batched output
     groups = paddle_result[0] if (len(paddle_result) == 1 and isinstance(paddle_result[0], list)) else paddle_result
-    for item in groups:
+    for item in groups or []:
         try:
             box, (txt, conf) = item
+            bbox = [[float(x), float(y)] for (x, y) in box]
+            lines.append({"text": str(txt), "confidence": float(conf), "bbox": bbox})
         except Exception:
-            # Sometimes structure differs slightly; skip malformed entries
             continue
-        # Ensure bbox is list of [x,y]
-        bbox = [[float(x), float(y)] for (x, y) in box]
-        lines.append({"text": str(txt), "confidence": float(conf), "bbox": bbox})
     return lines
 
 
 def main():
     print("--- Starting Vanilla PaddleOCR Benchmark (with JSONL export) ---")
-    print(f"Input:  {INPUT_DIR.resolve()}")
-    print(f"Output: {OUTPUT_JSONL.resolve()}")
 
-    # 1) Initialize PaddleOCR once
+    # 1. Set up and parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description="A simple, single-threaded, sequential OCR script for benchmarking PaddleOCR.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        "-i", "--input-dir",
+        type=Path,
+        default=DEFAULT_INPUT_DIR,
+        help="Directory containing files to OCR."
+    )
+    parser.add_argument(
+        "-o", "--output-path",
+        type=Path,
+        default=DEFAULT_OUTPUT_JSONL,
+        help="Path to save the output results JSONL."
+    )
+    args = parser.parse_args()
+    
+    # Use the parsed arguments
+    input_dir = args.input_dir
+    output_jsonl = args.output_path
+
+    if not input_dir.exists():
+        print(f"[Error] Input directory does not exist: {input_dir.resolve()}")
+        return
+
+    # 2. Initialize PaddleOCR once
     paddle_lang = os.getenv("PADDLE_LANG") or _pick_paddle_lang(LANGUAGES)
     use_gpu = _check_gpu_allowed(USE_GPU)
     print(f"Initializing PaddleOCR (lang='{paddle_lang}', use_gpu={use_gpu})...")
@@ -118,15 +135,15 @@ def main():
     ocr = PaddleOCR(use_angle_cls=True, lang=paddle_lang, use_gpu=use_gpu, show_log=False)
     print(f"Engine initialized in {time.perf_counter() - t0:.2f}s")
 
-    # 2) Collect files
+    # 3. Collect files from the correct directory
     files = [
-        p for p in INPUT_DIR.rglob("*")
+        p for p in input_dir.rglob("*")
         if p.is_file() and p.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg")
     ]
     if not files:
-        print("No files found. Exiting.")
+        print(f"No files found in {input_dir.resolve()}. Exiting.")
         return
-    print(f"Found {len(files)} files.")
+    print(f"Found {len(files)} files to process.")
 
     total_pages = 0
     total_cpu_render = 0.0
@@ -134,90 +151,59 @@ def main():
     wall_start = time.perf_counter()
 
     # Ensure parent folder for output exists
-    OUTPUT_JSONL.parent.mkdir(parents=True, exist_ok=True)
-    # Open JSONL once; write one record per page/image
-    with open(OUTPUT_JSONL, "w", encoding="utf-8") as fout:
+    output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 4. Process files and write results
+    with open(output_jsonl, "w", encoding="utf-8") as fout:
         for fpath in tqdm(files, desc="Processing Files"):
             try:
                 if fpath.suffix.lower() == ".pdf":
                     with fitz.open(fpath) as doc:
                         for page_idx, page in enumerate(doc):
-                            # CPU render
                             c0 = time.perf_counter()
                             pix = page.get_pixmap(dpi=TARGET_DPI)
                             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                            cpu_sec = time.perf_counter() - c0
-                            total_cpu_render += cpu_sec
+                            total_cpu_render += time.perf_counter() - c0
 
-                            # OCR
                             o0 = time.perf_counter()
-                            img_bgr = _pil_to_cv_bgr(img)
-                            result = ocr.ocr(img_bgr, cls=True)
-                            ocr_sec = time.perf_counter() - o0
-                            total_ocr += ocr_sec
+                            result = ocr.ocr(_pil_to_cv_bgr(img), cls=True)
+                            total_ocr += time.perf_counter() - o0
 
                             lines = _serialize_paddle_result(result)
                             record = {
                                 "timestamp": datetime.utcnow().isoformat() + "Z",
-                                "engine": "PaddleOCR",
-                                "engine_lang": paddle_lang,
-                                "source_path": str(fpath),
-                                "page_index": page_idx,
-                                "image_size": {"width": pix.width, "height": pix.height},
-                                "metrics": {
-                                    "cpu_render_seconds": round(cpu_sec, 4),
-                                    "ocr_seconds": round(ocr_sec, 4),
-                                },
-                                "lines": lines,  # list of {text, confidence, bbox}
-                                # Optional: concatenated text for quick eyeballing
+                                "engine": "PaddleOCR", "source_path": str(fpath),
+                                "page_index": page_idx, "lines": lines,
                                 "text": "\n".join(l["text"] for l in lines if l.get("text")),
                             }
                             fout.write(json.dumps(record, ensure_ascii=False) + "\n")
                             total_pages += 1
                 else:
-                    # Image file
                     c0 = time.perf_counter()
                     img = Image.open(fpath).convert("RGB")
-                    w, h = img.size
-                    cpu_sec = time.perf_counter() - c0
-                    total_cpu_render += cpu_sec
+                    total_cpu_render += time.perf_counter() - c0
 
                     o0 = time.perf_counter()
-                    img_bgr = _pil_to_cv_bgr(img)
-                    result = ocr.ocr(img_bgr, cls=True)
-                    ocr_sec = time.perf_counter() - o0
-                    total_ocr += ocr_sec
+                    result = ocr.ocr(_pil_to_cv_bgr(img), cls=True)
+                    total_ocr += time.perf_counter() - o0
 
                     lines = _serialize_paddle_result(result)
                     record = {
                         "timestamp": datetime.utcnow().isoformat() + "Z",
-                        "engine": "PaddleOCR",
-                        "engine_lang": paddle_lang,
-                        "source_path": str(fpath),
-                        "page_index": 0,
-                        "image_size": {"width": w, "height": h},
-                        "metrics": {
-                            "cpu_render_seconds": round(cpu_sec, 4),
-                            "ocr_seconds": round(ocr_sec, 4),
-                        },
-                        "lines": lines,
+                        "engine": "PaddleOCR", "source_path": str(fpath),
+                        "page_index": 0, "lines": lines,
                         "text": "\n".join(l["text"] for l in lines if l.get("text")),
                     }
                     fout.write(json.dumps(record, ensure_ascii=False) + "\n")
                     total_pages += 1
 
             except Exception as e:
-                err = {
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                    "engine": "PaddleOCR",
-                    "source_path": str(fpath),
-                    "error": str(e),
-                }
+                err = {"timestamp": datetime.utcnow().isoformat() + "Z", "source_path": str(fpath), "error": str(e)}
                 fout.write(json.dumps(err, ensure_ascii=False) + "\n")
 
     wall = time.perf_counter() - wall_start
 
-    # 3) Summary
+    # 5. Summary
     print("\n--- Vanilla PaddleOCR Benchmark Report ---")
     print(f"Total Files Processed: {len(files)}")
     print(f"Total Pages Processed: {total_pages}")
@@ -230,7 +216,7 @@ def main():
         print(f"Average Time per Page:          {(wall / total_pages):.2f} s")
         print(f"Throughput:                     {(total_pages / wall):.2f} pages/s")
     print("--------------------------------")
-    print(f"JSONL written to: {OUTPUT_JSONL.resolve()}")
+    print(f"JSONL written to: {output_jsonl.resolve()}")
 
 
 if __name__ == "__main__":
