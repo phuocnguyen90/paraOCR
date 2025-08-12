@@ -45,44 +45,87 @@ def _select_paddle_lang(langs: Any) -> str:
     return "en"
 
 
+
 def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Make kwargs compatible across PaddleOCR 2.x and 3.x:
-    - map use_gpu -> device ('gpu:0' or 'cpu') for 3.x
-    - map rec_batch_num -> text_recognition_batch_size for 3.x
-    - map use_angle_cls -> use_textline_orientation for 3.x
+    - languages/lang -> single 'lang'
+    - GPU: map to 'device' ('gpu:0' or 'cpu') for 3.x, 'use_gpu' (bool) for 2.x
+    - Batch size: map 'rec_batch_num' <-> 'text_recognition_batch_size'
+    - Angle cls: map 'use_angle_cls' <-> 'use_textline_orientation'
+    - Return ONE dict ready for PaddleOCR(**dict)
     """
-    k = dict(kwargs or {})
-
-    # languages/lang -> single Paddle lang
-    langs = k.pop("languages", None) or k.pop("lang", None) or ["vi", "en"]
-    k["lang"] = _select_paddle_lang(langs)
-
-    # GPU flags: accept gpu/use_gpu; auto-fallback to CPU if CUDA wheel/devices not available
-    use_gpu = k.pop("use_gpu", k.pop("gpu", True))
+    import paddle
     try:
-        compiled = paddle.device.is_compiled_with_cuda()
-        devs = paddle.device.cuda.device_count() if compiled else 0
-        use_gpu = bool(use_gpu and compiled and devs > 0)
-
+        from paddleocr import __version__ as _pocv
+        _maj = int(str(_pocv).split(".", 1)[0])
     except Exception:
-        use_gpu = False if use_gpu is None else bool(use_gpu)
+        _maj = 2  # assume 2.x if unknown
 
+    k_in = dict(kwargs or {})
 
-    # Reasonable defaults; allow override via kwargs
-    use_angle_cls = k.pop("use_angle_cls", True)
+    # ----- language -----
+    langs = k_in.pop("languages", None) or k_in.pop("lang", None) or ["vi", "en"]
+    lang = _select_paddle_lang(langs)  # single string for Paddle
 
+    # ----- device / gpu -----
+    device = k_in.pop("device", None)
+    want_gpu = k_in.pop("use_gpu", k_in.pop("gpu", None))
+    if device is None:
+        try:
+            compiled = paddle.device.is_compiled_with_cuda()
+            devs = paddle.device.cuda.device_count() if compiled else 0
+            if want_gpu is None:
+                want_gpu = bool(compiled and devs > 0)
+            else:
+                want_gpu = bool(want_gpu and compiled and devs > 0)
+        except Exception:
+            want_gpu = bool(want_gpu)
+        device = "gpu:0" if want_gpu else "cpu"
+
+    # ----- batch size -----
+    bs = k_in.pop("text_recognition_batch_size", k_in.pop("rec_batch_num", 6))
     try:
-        if "rec_batch_num" in k:
-            k["rec_batch_num"] = int(k["rec_batch_num"])
-        else:
-            k["rec_batch_num"] = 6
+        bs = int(bs)
     except Exception:
-        k["rec_batch_num"] = 6
+        bs = 6
 
-    k.setdefault("show_log", False)
+    # ----- angle classifier -----
+    angle = k_in.pop("use_textline_orientation", k_in.pop("use_angle_cls", True))
+    angle = bool(angle)
 
-    return k, use_gpu, langs, use_angle_cls
+    # ----- logging -----
+    show_log = bool(k_in.pop("show_log", False))
+
+    # Build the version-appropriate dict
+    if _maj >= 3:
+        out = {
+            "lang": lang,
+            "device": device,  # 'gpu:0' or 'cpu'
+            "text_recognition_batch_size": bs,
+            "use_textline_orientation": angle,
+            "show_log": show_log,
+        }
+    else:
+        out = {
+            "lang": lang,
+            "use_gpu": device.startswith("gpu"),
+            "rec_batch_num": bs,
+            "use_angle_cls": angle,
+            "show_log": show_log,
+        }
+
+    # Allowlist a few extras if present (don’t forward unknowns that 3.x might reject)
+    allow = [
+        "det_model_dir", "rec_model_dir", "cls_model_dir",
+        "det_db_box_thresh", "det_db_unclip_ratio",
+        "max_text_length", "det_limit_side_len", "det_limit_type",
+    ]
+    for kk in allow:
+        if kk in k_in:
+            out[kk] = k_in[kk]
+
+    return out
 
 
 def _ensure_bgr(img: Any) -> np.ndarray:
@@ -105,14 +148,8 @@ def _ensure_bgr(img: Any) -> np.ndarray:
 
 class PaddleOCREngine(BaseOCREngine):
     def __init__(self, **kwargs: Dict[str, Any]):
-        k = _norm_kwargs(kwargs)
-        remaining_kwargs, use_gpu, lang, use_angle_cls = _norm_kwargs(kwargs)
-        self.ocr = PaddleOCR(
-            use_gpu=use_gpu,
-            lang=lang,
-            use_angle_cls=use_angle_cls,
-            **remaining_kwargs
-        )
+        k = _norm_kwargs(kwargs)         
+        self.ocr = PaddleOCR(**k)      
 
     def read_batch(self, images: List[np.ndarray]) -> Tuple[List[str], float]:
         start = time.perf_counter()
