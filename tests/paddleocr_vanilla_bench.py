@@ -9,12 +9,12 @@ if not hasattr(np, "sctypes"):
         "others": [np.bool_, np.bytes_, np.str_],
     }
 
-
 import os
 import time
 from pathlib import Path
 from datetime import datetime
 import json
+from typing import Any, Dict
 
 import fitz  # PyMuPDF
 
@@ -26,66 +26,77 @@ from paddleocr import PaddleOCR
 import paddle
 import cv2
 
-
 # --- CONFIGURATION ---
-# Default paths and settings
 DEFAULT_INPUT_DIR = Path("tests/data")
 DEFAULT_OUTPUT_JSONL = Path("tests/paddleocr_results.jsonl")
+LANGUAGES = ["vi", "en"]
+USE_GPU = True
+TARGET_DPI = 200
 
-# OCR settings
-LANGUAGES = ["vi", "en"]     # We'll pick a suitable PaddleOCR model from this
-USE_GPU = True               # Will auto-fallback to CPU if CUDA build is unavailable
-TARGET_DPI = 200             # Match your other benchmarks for apples-to-apples
+# --- HELPER FUNCTIONS ---
 
-
-def _pick_paddle_lang(langs) -> str:
+def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """
-    PaddleOCR uses a single 'lang' model per Reader.
-    This helper picks a reasonable model based on your list.
+    Make kwargs compatible across PaddleOCR 2.x and 3.x.
+    This is ported from the main paraOCR backend for consistency.
     """
-    langs = [s.lower() for s in (langs or [])]
-    if "vi" in langs:
-        return "latin"
-    if "en" in langs:
-        return "en"
-    if any(l in langs for l in ("fr", "de", "es", "it", "pt")):
-        return "latin"
-    return "en"
-
-
-def _check_gpu_allowed(requested: bool) -> bool:
-    """
-    Verify whether PaddlePaddle is CUDA-enabled; if not, fall back to CPU.
-    """
-    if not requested:
-        return False
+    import paddle
     try:
-        if not paddle.device.is_compiled_with_cuda():
-            print("[WARN] PaddlePaddle was not compiled with CUDA. Falling back to CPU.")
-            return False
-        if paddle.device.cuda.device_count() < 1:
-            print("[WARN] No visible CUDA devices. Falling back to CPU.")
-            return False
-        return True
-    except Exception as e:
-        print(f"[WARN] Could not verify CUDA availability ({e}). Falling back to CPU.")
-        return False
+        from paddleocr import __version__ as _pocv
+        _maj = int(str(_pocv).split(".", 1)[0])
+    except Exception:
+        _maj = 2  # default assume 2.x
 
+    k_in = dict(kwargs or {})
+
+    # Language selection
+    def _select_paddle_lang(langs: Any) -> str:
+        if isinstance(langs, str): arr = [langs]
+        elif isinstance(langs, (list, tuple, set)): arr = list(langs)
+        else: arr = ["vi", "en"]
+        arr = [str(x).lower() for x in arr if x]
+        if "vi" in arr: return "la"
+        if "en" in arr: return "en"
+        return "en"
+
+    langs = k_in.pop("languages", None) or k_in.pop("lang", None) or ["vi", "en"]
+    lang = _select_paddle_lang(langs)
+
+    # Device/GPU selection
+    device = k_in.pop("device", None)
+    want_gpu = k_in.pop("use_gpu", k_in.pop("gpu", None))
+    if device is None:
+        try:
+            compiled = paddle.device.is_compiled_with_cuda()
+            devs = paddle.device.cuda.device_count() if compiled else 0
+            if want_gpu is None: want_gpu = bool(compiled and devs > 0)
+            else: want_gpu = bool(want_gpu and compiled and devs > 0)
+        except Exception:
+            want_gpu = bool(want_gpu)
+        device = "gpu:0" if want_gpu else "cpu"
+
+    # Normalize other params based on version
+    if _maj >= 3:
+        out = {"lang": lang, "device": device}
+    else:
+        out = {"lang": lang, "use_gpu": device.startswith("gpu")}
+
+    # Add common params, respecting version differences
+    out["use_angle_cls" if _maj < 3 else "use_textline_orientation"] = True
+    if _maj < 3:
+        out["show_log"] = False
+
+    return out
 
 def _pil_to_cv_bgr(im: Image.Image) -> np.ndarray:
-    """
-    Convert a PIL RGB image to OpenCV BGR ndarray for PaddleOCR.
-    """
+    """Convert a PIL RGB image to OpenCV BGR ndarray for PaddleOCR."""
     arr = np.array(im.convert("RGB"))
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 def _serialize_paddle_result(paddle_result) -> list[dict]:
-    """
-    Convert PaddleOCR's complex output structure to a simple list of dicts.
-    """
+    """Convert PaddleOCR's complex output structure to a simple list of dicts."""
     lines = []
-    if not paddle_result:
-        return lines
+    if not paddle_result: return lines
     groups = paddle_result[0] if (len(paddle_result) == 1 and isinstance(paddle_result[0], list)) else paddle_result
     for item in groups or []:
         try:
@@ -96,30 +107,14 @@ def _serialize_paddle_result(paddle_result) -> list[dict]:
             continue
     return lines
 
-
 def main():
     print("--- Starting Vanilla PaddleOCR Benchmark (with JSONL export) ---")
 
-    # 1. Set up and parse command-line arguments
-    parser = argparse.ArgumentParser(
-        description="A simple, single-threaded, sequential OCR script for benchmarking PaddleOCR.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument(
-        "-i", "--input-dir",
-        type=Path,
-        default=DEFAULT_INPUT_DIR,
-        help="Directory containing files to OCR."
-    )
-    parser.add_argument(
-        "-o", "--output-path",
-        type=Path,
-        default=DEFAULT_OUTPUT_JSONL,
-        help="Path to save the output results JSONL."
-    )
+    parser = argparse.ArgumentParser(description="A simple, single-threaded, sequential OCR script for benchmarking PaddleOCR.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("-i", "--input-dir", type=Path, default=DEFAULT_INPUT_DIR, help="Directory containing files to OCR.")
+    parser.add_argument("-o", "--output-path", type=Path, default=DEFAULT_OUTPUT_JSONL, help="Path to save the output results JSONL.")
     args = parser.parse_args()
     
-    # Use the parsed arguments
     input_dir = args.input_dir
     output_jsonl = args.output_path
 
@@ -127,19 +122,18 @@ def main():
         print(f"[Error] Input directory does not exist: {input_dir.resolve()}")
         return
 
-    # 2. Initialize PaddleOCR once
-    paddle_lang = os.getenv("PADDLE_LANG") or _pick_paddle_lang(LANGUAGES)
-    use_gpu = _check_gpu_allowed(USE_GPU)
-    print(f"Initializing PaddleOCR (lang='{paddle_lang}', use_gpu={use_gpu})...")
+    # 1. Prepare version-aware arguments for PaddleOCR
+    print("Preparing PaddleOCR arguments...")
+    initial_kwargs = {"languages": LANGUAGES, "use_gpu": USE_GPU}
+    final_paddle_args = _norm_kwargs(initial_kwargs)
+    
+    print(f"Initializing PaddleOCR with: {final_paddle_args}")
     t0 = time.perf_counter()
-    ocr = PaddleOCR(use_angle_cls=True, lang=paddle_lang, use_gpu=use_gpu, show_log=False)
+    ocr = PaddleOCR(**final_paddle_args)
     print(f"Engine initialized in {time.perf_counter() - t0:.2f}s")
 
-    # 3. Collect files from the correct directory
-    files = [
-        p for p in input_dir.rglob("*")
-        if p.is_file() and p.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg")
-    ]
+    # 2. Collect files
+    files = [p for p in input_dir.rglob("*") if p.is_file() and p.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg")]
     if not files:
         print(f"No files found in {input_dir.resolve()}. Exiting.")
         return
@@ -150,10 +144,7 @@ def main():
     total_ocr = 0.0
     wall_start = time.perf_counter()
 
-    # Ensure parent folder for output exists
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
-    
-    # 4. Process files and write results
     with open(output_jsonl, "w", encoding="utf-8") as fout:
         for fpath in tqdm(files, desc="Processing Files"):
             try:
@@ -170,15 +161,10 @@ def main():
                             total_ocr += time.perf_counter() - o0
 
                             lines = _serialize_paddle_result(result)
-                            record = {
-                                "timestamp": datetime.utcnow().isoformat() + "Z",
-                                "engine": "PaddleOCR", "source_path": str(fpath),
-                                "page_index": page_idx, "lines": lines,
-                                "text": "\n".join(l["text"] for l in lines if l.get("text")),
-                            }
+                            record = {"source_path": str(fpath), "page_index": page_idx, "lines": lines}
                             fout.write(json.dumps(record, ensure_ascii=False) + "\n")
                             total_pages += 1
-                else:
+                else: # Image file
                     c0 = time.perf_counter()
                     img = Image.open(fpath).convert("RGB")
                     total_cpu_render += time.perf_counter() - c0
@@ -188,36 +174,23 @@ def main():
                     total_ocr += time.perf_counter() - o0
 
                     lines = _serialize_paddle_result(result)
-                    record = {
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                        "engine": "PaddleOCR", "source_path": str(fpath),
-                        "page_index": 0, "lines": lines,
-                        "text": "\n".join(l["text"] for l in lines if l.get("text")),
-                    }
+                    record = {"source_path": str(fpath), "page_index": 0, "lines": lines}
                     fout.write(json.dumps(record, ensure_ascii=False) + "\n")
                     total_pages += 1
-
             except Exception as e:
-                err = {"timestamp": datetime.utcnow().isoformat() + "Z", "source_path": str(fpath), "error": str(e)}
+                err = {"source_path": str(fpath), "error": str(e)}
                 fout.write(json.dumps(err, ensure_ascii=False) + "\n")
 
     wall = time.perf_counter() - wall_start
 
-    # 5. Summary
+    # Summary
     print("\n--- Vanilla PaddleOCR Benchmark Report ---")
-    print(f"Total Files Processed: {len(files)}")
     print(f"Total Pages Processed: {total_pages}")
-    print("-" * 30)
-    print(f"Total Wall-Clock Time:          {wall:.2f} s")
-    print(f"Total CPU Render Time:          {total_cpu_render:.2f} s")
-    print(f"Total PaddleOCR Time (GPU={use_gpu}): {total_ocr:.2f} s")
-    print("-" * 30)
+    print(f"Total Wall-Clock Time: {wall:.2f} s")
     if total_pages > 0:
-        print(f"Average Time per Page:          {(wall / total_pages):.2f} s")
-        print(f"Throughput:                     {(total_pages / wall):.2f} pages/s")
+        print(f"Throughput: {(total_pages / wall):.2f} pages/s")
     print("--------------------------------")
     print(f"JSONL written to: {output_jsonl.resolve()}")
-
 
 if __name__ == "__main__":
     main()
