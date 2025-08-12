@@ -1,0 +1,44 @@
+# ===== GPU-enabled image (CUDA 12.1) =====
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Install Python + system libs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv python3-distutils \
+    build-essential git curl ca-certificates \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Make `python` / `pip` available
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1 \
+ && update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+WORKDIR /app
+
+# Install CUDA-matched PyTorch first
+RUN pip install -U pip wheel setuptools && \
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Optional: verify CUDA is visible at runtime (requires --gpus all)
+# RUN python - <<'PY'
+# import torch; print("CUDA available:", torch.cuda.is_available()); print("Device count:", torch.cuda.device_count())
+# PY
+
+# Pre-install reqs if present for caching; else straight to package
+COPY pyproject.toml setup.cfg setup.py requirements.txt* /app/ 2>/dev/null || true
+RUN ( [ -f requirements.txt ] && pip install -r requirements.txt || true )
+
+COPY . /app
+RUN pip install . && \
+    pip install filelock  # used to serialize EasyOCR model downloads
+
+EXPOSE 7860
+VOLUME ["/root/.easyocr"]
+
+# IMPORTANT: use spawn-friendly multiprocessing in your code (you already did);
+# runtime must provide NVIDIA runtime (--gpus all)
+CMD ["paraocr", "webui", "--server-name", "0.0.0.0", "--server-port", "7860"]

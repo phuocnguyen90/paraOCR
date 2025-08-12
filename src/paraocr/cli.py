@@ -7,8 +7,11 @@ import logging
 import sys
 from pathlib import Path
 from typing import List, Optional
+import multiprocessing as mp
 
 from tqdm import tqdm
+import time
+import re, ast
 
 from .config import OCRConfig
 from .models import OCRTask
@@ -18,6 +21,110 @@ from .logger import configure_worker_logging, setup_logging
 __all__ = ["collect_tasks", "run_pipeline", "main"]
 
 logger = logging.getLogger("paraocr")
+
+# Helper
+
+def _parse_backend_kwargs(val) -> dict:
+    """
+    Accept several syntaxes for --ocr-backend-kwargs:
+      1) JSON (double quotes)                      {"languages":["vi","en"],"oem":3,"psm":6}
+      2) JSON wrapped in single quotes             '{"languages":["vi","en"],"oem":3,"psm":6}'
+      3) Python-literal dict with single quotes    {'languages': ['vi','en'], 'oem': 3, 'psm': 6}
+      4) key=value pairs separated by , or ;       languages=vi,en;oem=3;psm=6
+    """
+    if isinstance(val, dict):
+        return dict(val)
+    if not isinstance(val, str):
+        return {}
+
+    s = val.strip()
+    # Strip outer quotes like '"{...}"' or "'{...}'"
+    if len(s) >= 2 and s[0] in ("'", '"') and s[-1] == s[0]:
+        s = s[1:-1].strip()
+
+    # Try strict JSON
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+
+    # Try Python literal dict
+    try:
+        lit = ast.literal_eval(s)
+        if isinstance(lit, dict):
+            return lit
+    except Exception:
+        pass
+
+    # Fallback: key=value pairs
+    out: dict = {}
+    parts = re.split(r"[;,]\s*", s)
+    for part in parts:
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+        elif ":" in part:
+            k, v = part.split(":", 1)
+        else:
+            continue
+
+        # Clean key/value: remove quotes, stray braces/brackets, trailing commas
+        k = k.strip().strip('"\'' ).lstrip("{[").rstrip("}]").strip()
+        v = v.strip().strip('"\'' ).lstrip("{[").rstrip("}]").rstrip(",").strip()
+
+        # List support like vi,en
+        if "," in v and not re.search(r"[\{\}\[\]]", v):
+            v = [x.strip().strip('"\'' ) for x in v.split(",") if x.strip()]
+
+        # Coerce scalars
+        if isinstance(v, str):
+            low = v.lower()
+            if low in ("true", "false"):
+                v = (low == "true")
+            else:
+                # integers/floats (allow a trailing comma/bracket already stripped above)
+                if re.fullmatch(r"-?\d+", v):
+                    v = int(v)
+                elif re.fullmatch(r"-?\d+\.\d*", v):
+                    v = float(v)
+
+        out[k] = v
+
+    if out:
+        return out
+
+    raise SystemExit(f"Invalid --ocr-backend-kwargs. Could not parse: {val!r}")
+
+
+def _normalize_common_backend_kwargs(d: dict) -> dict:
+    """
+    Backend-agnostic cleanup:
+      - hyphen-case -> snake_case
+      - lowercase keys
+      - normalize languages: 'lang' -> 'languages', and "vi,en" -> ["vi","en"]
+    """
+    if not d:
+        return {}
+    out = {}
+    for k, v in d.items():
+        key = k.strip().lower().replace("-", "_")
+        out[key] = v
+
+    # normalize languages
+    if "languages" not in out and "lang" in out:
+        out["languages"] = out.pop("lang")
+    if "languages" in out:
+        langs = out["languages"]
+        if isinstance(langs, str):
+            # split "vi,en" -> ["vi","en"]
+            out["languages"] = [s.strip() for s in langs.split(",")] if "," in langs else [langs.strip()]
+        elif isinstance(langs, (set, tuple)):
+            out["languages"] = list(langs)
+        # else: assume list/dict are already fine
+
+    return out
+
 
 
 def collect_tasks(config: OCRConfig) -> List[OCRTask]:
@@ -209,50 +316,71 @@ def _launch_webui_from_cli(args: argparse.Namespace) -> None:
 
 
 def _run_from_cli(args: argparse.Namespace) -> None:
-    # CLI logging to stdout, separate from WebUI logging
-    setup_logging()  # basic setup; we attach a console handler below
-    if not logger.handlers:
-        h = logging.StreamHandler(stream=sys.stdout)
-        h.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(h)
-        logger.setLevel(logging.INFO)
-
-    # Normalize backend kwargs
+    ctx = mp.get_context("spawn")
+    log_queue = ctx.Manager().Queue(-1)
+    # Derive a logfile next to the output JSONL (optional but handy)
+    log_file = None
     try:
-        backend_kwargs = (
-            json.loads(args.ocr_backend_kwargs)
-            if isinstance(args.ocr_backend_kwargs, str)
-            else dict(args.ocr_backend_kwargs)
-        )
-    except json.JSONDecodeError as e:
-        raise SystemExit(f"Invalid JSON for --ocr-backend-kwargs, {e}")
+        if args.output_path:
+            base_name = Path(args.output_path).with_suffix(".log").name
+        else:
+            base_name = f"paraocr_{time.strftime('%Y%m%d-%H%M%S')}.log"
+        log_file = Path.cwd() / base_name
+    except Exception:
+        log_file = Path.cwd() / f"paraocr_{time.strftime('%Y%m%d-%H%M%S')}.log"
 
-    # Build config dict and prune None so dataclass defaults apply
-    cfg_dict = {
-        "input_dir": args.input_dir,
-        "output_path": args.output_path,
-        "error_log_path": args.error_log_path,
-        "languages": args.languages,
-        "ignore_keywords": args.ignore_keywords or [],
-        "beamsearch": args.beamsearch,
-        "force_rerun": args.force_rerun,
-        "export_txt": args.export_txt,
-        "log_performance": args.log_performance,
-        "performance_log_path": args.performance_log_path,
-        "pdf_engine": args.pdf_engine,
-        "ocr_backend": args.ocr_backend,
-        "ocr_backend_kwargs": backend_kwargs,
-        # optional tuning fields
-        "num_workers": args.workers,
-        "num_gpu_workers": args.gpu_workers,
-        "gpu_batch_size": args.gpu_batch_size,
-        "dpi": args.dpi,
-    }
-    # Remove explicit None values
-    cfg_dict = {k: v for k, v in cfg_dict.items() if v is not None}
+    listener = setup_logging(
+        log_queue=log_queue,
+        text_ui_queue=None,       # no Gradio here
+        event_ui_queue=None,      # no progress events to UI
+        level=logging.INFO,
+        file_path=log_file,
+    )
+    listener.start()
 
-    config = OCRConfig.from_dict(cfg_dict)
-    run_pipeline(config)
+    try:
+        # Normalize backend kwargs
+        backend_kwargs = _parse_backend_kwargs(args.ocr_backend_kwargs) \
+            if isinstance(args.ocr_backend_kwargs, str) \
+            else (dict(args.ocr_backend_kwargs) if args.ocr_backend_kwargs else {})
+        backend_kwargs = _normalize_common_backend_kwargs(backend_kwargs)
+
+        # Build config dict and prune None so dataclass defaults apply
+        cfg_dict = {
+            "input_dir": args.input_dir,
+            "output_path": args.output_path,
+            "error_log_path": args.error_log_path,
+            "languages": args.languages,
+            "ignore_keywords": args.ignore_keywords or [],
+            "beamsearch": args.beamsearch,
+            "force_rerun": args.force_rerun,
+            "export_txt": args.export_txt,
+            "log_performance": args.log_performance,
+            "performance_log_path": args.performance_log_path,
+            "pdf_engine": args.pdf_engine,
+            "ocr_backend": args.ocr_backend,
+            "ocr_backend_kwargs": backend_kwargs,
+            # optional tuning fields
+            "num_workers": args.workers,
+            "num_gpu_workers": args.gpu_workers,
+            "gpu_batch_size": args.gpu_batch_size,
+            "dpi": args.dpi,
+            # >>> IMPORTANT: give the pipeline the same process-safe queue <<<
+            "log_queue": log_queue,
+        }
+        cfg_dict = {k: v for k, v in cfg_dict.items() if v is not None}
+
+        config = OCRConfig.from_dict(cfg_dict)
+
+        # Run the non-UI pipeline
+        run_pipeline(config)
+
+    finally:
+        # Always stop the listener so the process can exit cleanly
+        try:
+            listener.stop()
+        except Exception:
+            pass
 
 
 def main(argv: Optional[List[str]] = None):

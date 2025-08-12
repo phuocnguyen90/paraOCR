@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  paraocr-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: paraocr:cpu
+    ports:
+      - "7860:7860"
+    volumes:
+      - ~/.easyocr:/root/.easyocr
+      - ./data:/data  # optional bind for your inputs/outputs
+    command: ["paraocr", "webui", "--server-name", "0.0.0.0", "--server-port", "7860"]
+
+  paraocr-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: paraocr:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    ports:
+      - "7860:7860"
+    volumes:
+      - ~/.easyocr:/root/.easyocr
+      - ./data:/data
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    command: ["paraocr", "webui", "--server-name", "0.0.0.0", "--server-port", "7860"]

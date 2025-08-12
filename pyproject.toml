@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paraOCR"
+version = "0.1.0"
+description = "High-throughput, parallel OCR pipeline with a Web UI (PDFs & images; EasyOCR backend)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Phuoc Nguyen" }]
+keywords = ["ocr", "pdf", "easyocr", "parallel", "gpu", "gradio", "pipeline"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Image Recognition",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+# Core runtime deps.
+# NOTE: For best results on GPU, install a CUDA-matched torch BEFORE installing this package.
+dependencies = [
+  "tqdm>=4.66",
+  "pandas>=1.5",
+  "pymupdf>=1.22",                 # fitz
+  "opencv-python-headless>=4.7",   # used by EasyOCR
+  "easyocr>=1.7.1",                # backend; will use existing torch if preinstalled
+  "gradio>=4.29,<5",               # Web UI
+  "filelock>=3.12",                # serialize model downloads across workers
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.4",
+  "black>=24.3",
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "mypy>=1.8",
+  "build>=1.0",
+  "twine>=5.0",
+]
+# If you prefer to avoid easyocr pulling CPU torch by default,
+# you can remove easyocr from [project.dependencies] and use:
+# backend = ["easyocr>=1.7.1"]
+
+[project.urls]
+Homepage = "https://github.com/phuocnguyen90/paraOCR"
+Issues = "https://github.com/phuocnguyen90/paraOCR/issues"
+
+[project.scripts]
+# Main CLI with subcommands: `paraocr run ...` and `paraocr webui ...`
+paraocr = "paraocr.cli:main"
+# Convenience launcher for the Web UI: `paraocr-webui`
+paraocr-webui = "paraocr.cli:webui_entry"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["paraocr*"]
+exclude = ["tests*", "docs*"]
+
+# Include any non-Python assets if you add them later:
+# [tool.setuptools.package-data]
+# "paraocr" = ["py.typed", "assets/*"]
+
+# Optional lint/format configs (feel free to tweak/remove)
+[tool.ruff]
+target-version = "py39"
+line-length = 100

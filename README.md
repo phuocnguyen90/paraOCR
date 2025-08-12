@@ -20,21 +20,24 @@ Originally CLI-first, it now also ships with a Web UI for ease of use. After ins
 
 ## Performance Benchmarks
 
-`paraOCR` leverages parallel processing to dramatically accelerate OCR tasks compared to a standard, sequential script. The following benchmarks were conducted on a system with an **Intel Core i5-12400 CPU** and an **NVIDIA GeForce RTX 3060 (12GB) GPU**.
 
-#### Test 1: Large Document (1 file, 100 pages)
+**Dataset:** 10 files (\~60 pages) • **Settings:** CPU=10, GPU=3, Batch=16, DPI=200, langs=`vi en`
+*(Model download time excluded.)*
 
-| Metric | Vanilla Script | `paraOCR` (Parallel) | Performance Gain |
-| :--- | :--- | :--- | :--- |
-| **Total Time** | 419.4 sec | **200.9 sec** | **2.09x Faster** |
-| **Throughput** | 0.24 pages/sec | **0.50 pages/sec** | **+108%** |
+| Backend       | Mode        | Wall time    | Throughput   |
+| ------------- | ----------- | ------------ | ------------ |
+| **PaddleOCR** | **paraOCR** | **28.07 s**  | **2.14 p/s** |
+| PaddleOCR     | vanilla     | 29.33 s      | 2.05 p/s     |
+| **Tesseract** | **paraOCR** | **71.02 s**  | **0.85 p/s** |
+| Tesseract     | vanilla     | 185.31 s     | 0.32 p/s     |
+| **EasyOCR**   | **paraOCR** | **116.00 s** | **0.52 p/s** |
+| EasyOCR       | vanilla     | 181.12 s     | 0.33 p/s     |
 
-#### Test 2: Mixed Small Files (10 files, 60 pages total)
+**Speedups (paraOCR vs. vanilla):**
+Tesseract **\~2.6×**, EasyOCR **\~1.6×**, PaddleOCR **\~1.05×**.
 
-| Metric | Vanilla Script | `paraOCR` (Parallel) | Performance Gain |
-| :--- | :--- | :--- | :--- |
-| **Total Time** | 176.1 sec | **112.5 sec** | **1.57x Faster** |
-| **Throughput** | 0.34 pages/sec | **0.53 pages/sec** | **+56%** |
+> Note: PaddleOCR here uses `lang=latin` (fast; Vietnamese accuracy may be lower than VN-specific models).
+
 
 ---
 
