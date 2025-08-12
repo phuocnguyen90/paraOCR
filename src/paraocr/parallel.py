@@ -58,27 +58,6 @@ class PerformanceTracker:
             "gpu_avg_sec_per_page": round(gpu_total / gpu_pages_processed, 4) if gpu_pages_processed > 0 else 0,
         }
 
-def master_worker(task: dict) -> dict:
-    """
-    Multiplex to the correct worker based on processing_type,
-    also attach a duration field.
-    """
-    task_type = task.get("processing_type")
-    start_time = time.perf_counter()
-
-    if task_type == "text_ocr":
-        result = worker_render_text_page(task)
-    elif task_type == "table":
-        result = worker_process_table_page(task)
-    elif task_type == "image":
-        result = worker_process_image_page(task)
-    else:
-        task["error"] = f"Unknown processing type received by master_worker, {task_type}"
-        result = task
-
-    result["duration_seconds"] = time.perf_counter() - start_time
-    return result
-
 # --- MAIN RUNNER CLASS ---
 class OCRRunner:
     def __init__(self, config: OCRConfig):
@@ -180,6 +159,7 @@ class OCRRunner:
         return page_level_tasks
 
     # paraOCR/parallel.py, inside the OCRRunner class
+    @staticmethod
     def _build_backend_kwargs(cfg: OCRConfig) -> Dict[str, Any]:
         kw = dict(cfg.ocr_backend_kwargs or {})
         if "languages" not in kw and "lang" not in kw:
@@ -262,12 +242,13 @@ class OCRRunner:
             logger.progress("render start", extra={"phase": "render", "pct": 30})
             rendered = 0
             total_render = len(text_render_queue)
+            final_backend_kwargs = OCRRunner._build_backend_kwargs(self.config)
 
             # This is the key: two separate, dedicated pools that run concurrently.
             with ctx.Pool(processes=self.config.num_workers, initializer=configure_worker_logging,initargs=(self.config.log_queue,)) as render_pool, \
                  ctx.Pool(processes=self.config.num_gpu_workers, 
                       initializer=initialize_gpu_worker, 
-                      initargs=(self.config.log_queue,self.config.ocr_backend, self.config.ocr_backend_kwargs)) as gpu_pool:
+                      initargs=(self.config.log_queue,self.config.ocr_backend, final_backend_kwargs)) as gpu_pool:
 
                 # --- STAGE 4a: Submit CPU Rendering Jobs ---
                 # The main process streams rendering tasks to the render_pool.
@@ -313,28 +294,35 @@ class OCRRunner:
 
                 for job, meta_data in tqdm(async_gpu_results, desc="Aggregating Batches"):
                     try:
-                        ocr_texts, gpu_duration = job.get()
-                    except Exception as e:
-                        for meta in meta_data: self._log_error(meta["source_path"], f"GPU batch failed: {e}")
-                        ocr_texts, gpu_duration = [""] * len(meta_data), 0.0
+                        try:
+                            ocr_texts, gpu_duration = job.get()
+                        except Exception as e:
+                            for meta in meta_data: self._log_error(meta["source_path"], f"GPU batch failed: {e}")
+                            ocr_texts, gpu_duration = [""] * len(meta_data), 0.0
 
-                    perf_tracker.attribute_gpu_batch_time(meta_data, gpu_duration)
+                        perf_tracker.attribute_gpu_batch_time(meta_data, gpu_duration)
 
-                    # Update the shared progress tracker with the OCR'd text
-                    for i, text in enumerate(ocr_texts):
-                        meta = meta_data[i]
-                        progress_tracker[meta["source_path"]][meta["page_num"]] = {"type": "text", "data": text}
-                    
+                        # Update the shared progress tracker with the OCR'd text
+                        for i, text in enumerate(ocr_texts):
+                            meta = meta_data[i]
+                            progress_tracker[meta["source_path"]][meta["page_num"]] = {"type": "text", "data": text}
+
+                    finally:    
                     # Cleanup temp files for this batch
-                    for meta in meta_data:
-                        try: Path(meta["temp_path"]).unlink(missing_ok=True)
-                        except Exception as e: self._log_error(meta["source_path"], f"Temp cleanup failed: {e}")
+                        for meta in meta_data:
+                            try: Path(meta["temp_path"]).unlink(missing_ok=True)
+                            except Exception as e: self._log_error(meta["source_path"], f"Temp cleanup failed: {e}")
 
                     aggregated += 1
                     logger.progress(
                         "aggregate progress",
                         extra={"phase": "aggregate", "current": aggregated, "total": total_batches}
                     )
+                for meta in meta_data:
+                    try: 
+                        Path(meta["temp_path"]).unlink(missing_ok=True)
+                    except Exception as e: 
+                        self._log_error(meta["source_path"], f"Temp cleanup failed: {e}")
 
             # STAGE 5: final write
             logger.info("Aggregating and writing final results")

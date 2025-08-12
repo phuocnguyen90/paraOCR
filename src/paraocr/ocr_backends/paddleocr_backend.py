@@ -46,6 +46,12 @@ def _select_paddle_lang(langs: Any) -> str:
 
 
 def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Make kwargs compatible across PaddleOCR 2.x and 3.x:
+    - map use_gpu -> device ('gpu:0' or 'cpu') for 3.x
+    - map rec_batch_num -> text_recognition_batch_size for 3.x
+    - map use_angle_cls -> use_textline_orientation for 3.x
+    """
     k = dict(kwargs or {})
 
     # languages/lang -> single Paddle lang
@@ -57,14 +63,15 @@ def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     try:
         compiled = paddle.device.is_compiled_with_cuda()
         devs = paddle.device.cuda.device_count() if compiled else 0
-        if not (use_gpu and compiled and devs > 0):
-            use_gpu = False
+        use_gpu = bool(use_gpu and compiled and devs > 0)
+
     except Exception:
         use_gpu = False if use_gpu is None else bool(use_gpu)
-    k["use_gpu"] = bool(use_gpu)
+
 
     # Reasonable defaults; allow override via kwargs
-    k.setdefault("use_angle_cls", True)
+    use_angle_cls = k.pop("use_angle_cls", True)
+
     try:
         if "rec_batch_num" in k:
             k["rec_batch_num"] = int(k["rec_batch_num"])
@@ -72,8 +79,10 @@ def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
             k["rec_batch_num"] = 6
     except Exception:
         k["rec_batch_num"] = 6
+
     k.setdefault("show_log", False)
-    return k
+
+    return k, use_gpu, langs, use_angle_cls
 
 
 def _ensure_bgr(img: Any) -> np.ndarray:
@@ -97,7 +106,13 @@ def _ensure_bgr(img: Any) -> np.ndarray:
 class PaddleOCREngine(BaseOCREngine):
     def __init__(self, **kwargs: Dict[str, Any]):
         k = _norm_kwargs(kwargs)
-        self.ocr = PaddleOCR(**k)
+        remaining_kwargs, use_gpu, lang, use_angle_cls = _norm_kwargs(kwargs)
+        self.ocr = PaddleOCR(
+            use_gpu=use_gpu,
+            lang=lang,
+            use_angle_cls=use_angle_cls,
+            **remaining_kwargs
+        )
 
     def read_batch(self, images: List[np.ndarray]) -> Tuple[List[str], float]:
         start = time.perf_counter()
