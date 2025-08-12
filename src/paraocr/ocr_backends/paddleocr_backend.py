@@ -45,14 +45,13 @@ def _select_paddle_lang(langs: Any) -> str:
     return "en"
 
 
-
 def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Make kwargs compatible across PaddleOCR 2.x and 3.x:
     - languages/lang -> single 'lang'
-    - GPU: map to 'device' ('gpu:0' or 'cpu') for 3.x, 'use_gpu' (bool) for 2.x
-    - Batch size: map 'rec_batch_num' <-> 'text_recognition_batch_size'
-    - Angle cls: map 'use_angle_cls' <-> 'use_textline_orientation'
+    - GPU: 3.x uses device='gpu:0'/'cpu'; 2.x uses use_gpu=bool
+    - Batch: 3.x text_recognition_batch_size; 2.x rec_batch_num
+    - Angle: 3.x use_textline_orientation; 2.x use_angle_cls
     - Return ONE dict ready for PaddleOCR(**dict)
     """
     import paddle
@@ -60,15 +59,15 @@ def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
         from paddleocr import __version__ as _pocv
         _maj = int(str(_pocv).split(".", 1)[0])
     except Exception:
-        _maj = 2  # assume 2.x if unknown
+        _maj = 2  # default assume 2.x
 
     k_in = dict(kwargs or {})
 
-    # ----- language -----
+    # ---- language ----
     langs = k_in.pop("languages", None) or k_in.pop("lang", None) or ["vi", "en"]
-    lang = _select_paddle_lang(langs)  # single string for Paddle
+    lang = _select_paddle_lang(langs)
 
-    # ----- device / gpu -----
+    # ---- device / gpu ----
     device = k_in.pop("device", None)
     want_gpu = k_in.pop("use_gpu", k_in.pop("gpu", None))
     if device is None:
@@ -83,30 +82,37 @@ def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
             want_gpu = bool(want_gpu)
         device = "gpu:0" if want_gpu else "cpu"
 
-    # ----- batch size -----
+    # ---- batch size ----
     bs = k_in.pop("text_recognition_batch_size", k_in.pop("rec_batch_num", 6))
     try:
         bs = int(bs)
     except Exception:
         bs = 6
 
-    # ----- angle classifier -----
+    # ---- angle classifier ----
     angle = k_in.pop("use_textline_orientation", k_in.pop("use_angle_cls", True))
     angle = bool(angle)
 
-    # ----- logging -----
+    # ---- logging (2.x supported; 3.x rejects) ----
     show_log = bool(k_in.pop("show_log", False))
 
-    # Build the version-appropriate dict
     if _maj >= 3:
+        # PaddleOCR 3.x allowlist
         out = {
             "lang": lang,
             "device": device,  # 'gpu:0' or 'cpu'
             "text_recognition_batch_size": bs,
             "use_textline_orientation": angle,
-            "show_log": show_log,
+            # DO NOT pass 'show_log' on 3.x (raises Unknown argument)
         }
+        # pass through a few safe extras if present
+        for kk in ("det_model_dir", "rec_model_dir", "cls_model_dir",
+                   "det_db_box_thresh", "det_db_unclip_ratio",
+                   "max_text_length", "det_limit_side_len", "det_limit_type"):
+            if kk in k_in:
+                out[kk] = k_in[kk]
     else:
+        # PaddleOCR 2.x allowlist
         out = {
             "lang": lang,
             "use_gpu": device.startswith("gpu"),
@@ -114,18 +120,14 @@ def _norm_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
             "use_angle_cls": angle,
             "show_log": show_log,
         }
-
-    # Allowlist a few extras if present (don’t forward unknowns that 3.x might reject)
-    allow = [
-        "det_model_dir", "rec_model_dir", "cls_model_dir",
-        "det_db_box_thresh", "det_db_unclip_ratio",
-        "max_text_length", "det_limit_side_len", "det_limit_type",
-    ]
-    for kk in allow:
-        if kk in k_in:
-            out[kk] = k_in[kk]
+        for kk in ("det_model_dir", "rec_model_dir", "cls_model_dir",
+                   "det_db_box_thresh", "det_db_unclip_ratio",
+                   "max_text_length", "det_limit_side_len", "det_limit_type"):
+            if kk in k_in:
+                out[kk] = k_in[kk]
 
     return out
+
 
 
 def _ensure_bgr(img: Any) -> np.ndarray:
