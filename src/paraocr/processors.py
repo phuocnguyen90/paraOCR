@@ -9,6 +9,7 @@ import hashlib
 
 import fitz
 from PIL import Image
+MAX_PIXELS = 85_000_000
 
 logger = logging.getLogger("paraocr")
 
@@ -18,7 +19,36 @@ def _render_png_path(temp_dir: Path, key: str) -> Path:
 def _ensure_parent(p: Path):
     p.parent.mkdir(parents=True, exist_ok=True)
 
+def _normalize_image(img: Image.Image) -> Image.Image:
+    """
+    Checks if an image exceeds pixel limits and resizes it if necessary.
+    Also ensures the image is in a standard RGB format for consistency.
+    """
+    # 1. Convert to a standard mode. OCR engines work best with RGB or grayscale.
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
 
+    # 2. Check the total number of pixels against our safe limit.
+    current_pixels = img.width * img.height
+    if current_pixels > MAX_PIXELS:
+        # Calculate the scaling factor needed to bring the pixel count under the limit.
+        scale_factor = (MAX_PIXELS / current_pixels) ** 0.5
+        new_width = int(img.width * scale_factor)
+        new_height = int(img.height * scale_factor)
+
+        logger.warning(
+            "Image size (%d pixels) exceeds limit of %d. "
+            "Resizing from %dx%d to %dx%d to prevent Decompression Bomb warning.",
+            current_pixels, MAX_PIXELS,
+            img.width, img.height,
+            new_width, new_height
+        )
+        
+        # Use LANCZOS resampling for the highest quality downscaling.
+        # Note: This was formerly Image.ANTIALIAS in older Pillow versions.
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    return img
 
 # --- 1. Dispatcher worker ---
 def worker_dispatcher(page_task: dict) -> dict:
@@ -98,17 +128,29 @@ def worker_render_text_page(page_task: dict) -> dict:
             with fitz.open(file_path) as doc:
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-                pix.save(str(out_path))
+                # Efficiently convert pixmap to PIL Image in memory
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         else:
             # Normalize images to RGB PNG (optionally you can resample to a target DPI)
-            with Image.open(file_path) as im:
-                im.convert("RGB").save(out_path, format="PNG")
+            img = Image.open(file_path)
+
+        # 3) --- CRITICAL STEP: Normalize the image ---
+        normalized_img = _normalize_image(img)
+        
+        # 4) Save the final, safe-sized image as a PNG
+        normalized_img.save(out_path, format="PNG")
+        
+        # 5) Clean up the PIL image object
+        if hasattr(img, 'close'):
+            img.close()
+        if hasattr(normalized_img, 'close'):
+            normalized_img.close()
 
         page_task["temp_path"] = str(out_path)
         return page_task
 
     except Exception as e:
-        page_task["error"] = f"Text page rendering failed, {e}"
+        page_task["error"] = f"Text page rendering failed: {e} (Type: {type(e).__name__})"
         return page_task
 
     finally:

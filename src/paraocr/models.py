@@ -28,3 +28,4 @@ class OCRResult:
     # Content will be a list, with each element being the result for a page
     content: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
+    warnings: Optional[List[str]] = None

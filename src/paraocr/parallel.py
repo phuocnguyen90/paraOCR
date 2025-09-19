@@ -25,6 +25,7 @@ from .processors import (
     worker_process_table_page,
     worker_process_image_page,
 )
+from .postprocess import Postprocessor
 from .gpu_worker import initialize_gpu_worker, process_gpu_batch
 from .logger import configure_worker_logging
 
@@ -101,6 +102,10 @@ class OCRRunner:
     def __init__(self, config: OCRConfig):
         self.config = config
         self.pdf_processor = get_pdf_processor(config.pdf_engine)
+        self.postprocessor: Postprocessor | None = None
+        if getattr(config, "postprocess_check_intelligibility", False):
+            logger.info("Intelligibility check is enabled.")
+            self.postprocessor = Postprocessor(config)
 
 
         
@@ -640,6 +645,20 @@ class OCRRunner:
         try:
             # Note: If OCRResult is a dataclass, use `asdict(result_obj)`
             result_obj = OCRResult(source_path=path_str, total_pages=len(pages), content=pages)
+            
+            # --- NEW: Run Post-processing Check ---
+            if self.postprocessor:
+                check_result = self.postprocessor.check_intelligibility(result_obj)
+                if not check_result.passed:
+                    # Add a warning to the result object itself
+                    if result_obj.warnings is None:
+                        result_obj.warnings = []
+                    result_obj.warnings.append(check_result.reason)
+                    logger.warning(
+                        "File %s failed intelligibility check. Reason: %s",
+                        path_str, check_result.reason
+                    )
+                    
             outfile.write(json.dumps(result_obj.__dict__, ensure_ascii=False) + "\n")
             outfile.flush()  # Make sure it's written to disk immediately
 

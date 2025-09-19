@@ -396,7 +396,30 @@ def _build_run_parser(subparsers: argparse._SubParsersAction | argparse.Argument
         help="Version string for cache invalidation (bump when render params change).",
     )
 
+    post_group = p.add_argument_group("Post-processing")
+    post_group.add_argument(
+        "--check-intelligibility",
+        dest="postprocess_check_intelligibility",
+        action="store_true",
+        help="Enable post-processing to check if OCR output is intelligible.",
+    )
+    post_group.add_argument(
+        "--intelligibility-threshold",
+        dest="postprocess_intelligibility_threshold",
+        type=float,
+        default=0.3,
+        help="Ratio of unintelligible content to trigger a warning (default: 0.3).",
+    )
+    post_group.add_argument(
+        "--failure-log",
+        dest="postprocess_failure_log_path",
+        type=Path,
+        help="Path to save the post-processing failure log JSONL file.",
+    )
+
     return p
+
+
 
 
 def _build_webui_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -529,6 +552,9 @@ def _run_from_cli(args: argparse.Namespace) -> None:
             "keep_render_cache": args.keep_render_cache,
             "cache_version": args.cache_version,
             "log_queue": log_queue,
+            "postprocess_check_intelligibility": args.postprocess_check_intelligibility,
+            "postprocess_intelligibility_threshold": args.postprocess_intelligibility_threshold,
+            "postprocess_failure_log_path": args.postprocess_failure_log_path,
         }
         cfg_dict = {k: v for k, v in cfg_dict.items() if v is not None}
         config = OCRConfig.from_dict(cfg_dict)

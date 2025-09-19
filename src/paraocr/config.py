@@ -52,6 +52,10 @@ class OCRConfig:
     ocr_backend: str = "paraocr.ocr_backends.easyocr_backend.EasyOCREngine"
     ocr_backend_kwargs: Dict[str, Any] = field(default_factory=dict)
 
+    # Post-processing
+    postprocess_check_intelligibility: bool = False
+    postprocess_intelligibility_threshold: float = 0.3
+    postprocess_failure_log_path: Optional[Path] = None
     
     min_native_text_chars: int = 100
     native_text_quality_threshold: float = 0.3
