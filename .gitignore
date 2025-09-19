@@ -187,3 +187,4 @@ tests/data2
 vanilla_bench.py
 paraOCR_performance_log.jsonl
 powerocr_performance_log.jsonl
+temp.py

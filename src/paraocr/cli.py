@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 import multiprocessing as mp
+from datetime import datetime
+import importlib
 
 from tqdm import tqdm
 import time
@@ -96,6 +98,31 @@ def _parse_backend_kwargs(val) -> dict:
 
     raise SystemExit(f"Invalid --ocr-backend-kwargs. Could not parse: {val!r}")
 
+def _preflight_backend_import(dotted: str) -> None:
+    """
+    Try to import the backend class now, so we can fail fast with a clear message
+    instead of crashing inside worker processes later.
+    """
+    try:
+        module_path, cls_name = dotted.rsplit(".", 1)
+    except ValueError:
+        raise SystemExit(f"--ocr-backend must be 'module.Class', got: {dotted!r}")
+
+    try:
+        mod = importlib.import_module(module_path)
+    except Exception as e:
+        raise SystemExit(f"Cannot import backend module: {module_path!r} ({e})")
+
+    try:
+        getattr(mod, cls_name)
+    except AttributeError:
+        raise SystemExit(
+            f"Backend class not found: {dotted}\n"
+            f"- If you meant Tesseract, use: paraocr.ocr_backends.tesseract_backend.TesseractOCREngine\n"
+            f"- If you meant EasyOCR, use:    paraocr.ocr_backends.easyocr_backend.EasyOCREngine"
+        )
+
+
 
 def _normalize_common_backend_kwargs(d: dict) -> dict:
     """
@@ -124,6 +151,74 @@ def _normalize_common_backend_kwargs(d: dict) -> dict:
         # else: assume list/dict are already fine
 
     return out
+
+def _normalize_output_path(arg: Path) -> Path:
+    """
+    Accept both files and directories for --output-path.
+    - If arg is an existing directory: create timestamped JSONL inside it.
+    - If arg looks like a filename with no suffix: add .jsonl
+    - Otherwise: use as-is.
+    Ensures parent dirs exist and the file is writable.
+    """
+    out = Path(arg)
+
+    # If it's an existing directory, create a timestamped file inside
+    if out.exists() and out.is_dir():
+        out = out / f"paraocr_{datetime.now():%Y%m%d_%H%M%S}.jsonl"
+    else:
+        # If no suffix given, default to .jsonl
+        if out.suffix == "":
+            out = out.with_suffix(".jsonl")
+        # If suffix exists but parent is a directory path that doesn't exist yet, that's fine—create it below
+
+    # Make sure parent exists
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Validate writability (touch/append-open then close)
+    try:
+        with open(out, "a", encoding="utf-8"):
+            pass
+    except Exception as e:
+        raise SystemExit(f"--output-path is not writable: {out} ({e})")
+
+    return out
+
+
+def _normalize_backend_alias(name: str) -> str:
+    """
+    Allow short aliases (case-insensitive) and a couple of module-only shorthands.
+    Returns a fully qualified dotted path 'module.Class'.
+    """
+    if not name:
+        return name
+
+    original = name.strip().strip('"\'')
+
+    alias = original.lower()
+
+    # Primary aliases
+    mapping = {
+        # EasyOCR
+        "easy": "paraocr.ocr_backends.easyocr_backend.EasyOCREngine",
+        "easyocr": "paraocr.ocr_backends.easyocr_backend.EasyOCREngine",
+
+        # Tesseract (pytesseract)
+        "tess": "paraocr.ocr_backends.tesseract_backend.TesseractOCREngine",
+        "tesseract": "paraocr.ocr_backends.tesseract_backend.TesseractOCREngine",
+        "pytesseract": "paraocr.ocr_backends.tesseract_backend.TesseractOCREngine",
+    }
+    if alias in mapping:
+        return mapping[alias]
+
+    # Module-only shorthands → attach the expected class
+    if alias.endswith(".tesseract_backend"):
+        return "paraocr.ocr_backends.tesseract_backend.TesseractOCREngine"
+    if alias.endswith(".easyocr_backend"):
+        return "paraocr.ocr_backends.easyocr_backend.EasyOCREngine"
+
+    # If user typed the correct fully-qualified path already, leave it as-is.
+    return original
+
 
 
 
@@ -208,22 +303,32 @@ def _build_run_parser(subparsers: argparse._SubParsersAction | argparse.Argument
         p = subparsers
     else:
         p = subparsers.add_parser("run", help="Run the OCR pipeline in non-UI CLI mode")
+
+    # Core I/O & selection
     p.add_argument("-i", "--input-dir", type=Path, required=True, help="Directory containing files to OCR")
-    p.add_argument("-o", "--output-path", type=Path, required=True, help="Path to save the output results JSONL")
-    p.add_argument("-w", "--workers", type=int, help="Number of CPU worker processes for rendering")
-    p.add_argument("-g", "--gpu-workers", type=int, help="Number of GPU worker processes")
-    p.add_argument("-b", "--gpu-batch-size", type=int, help="Number of images to send to the GPU in one batch")
-    p.add_argument("-d", "--dpi", type=int, help="DPI to use for rendering PDF pages")
-    p.add_argument("-l", "--languages", nargs="+", default=["vi", "en"], help="Language codes for OCR")
-    p.add_argument("--beamsearch", action="store_true", help="Enable beam search for OCR backends that support it")
+    p.add_argument(
+    "-o", "--output-path", type=Path, required=True,
+    help="Output results path. Accepts a .jsonl file OR a directory (a timestamped .jsonl will be created inside)."
+    )
+
     p.add_argument(
         "--ignore-keyword",
         action="append",
         dest="ignore_keywords",
-        help="Keyword in filename to ignore, can be used multiple times",
+        help="Keyword in filename to ignore; can be used multiple times",
     )
     p.add_argument("--force-rerun", action="store_true", help="Reprocess all files and ignore previous results")
     p.add_argument("--error-log-path", type=Path, help="Path to save the error log JSONL file")
+
+    # Runtime / performance knobs
+    p.add_argument("-w", "--workers", type=int, help="Number of CPU worker processes for rendering")
+    p.add_argument("-g", "--gpu-workers", type=int, help="Number of GPU worker processes")
+    p.add_argument("-b", "--gpu-batch-size", type=int, help="Number of images to send to the GPU in one batch")
+    p.add_argument("-d", "--dpi", type=int, help="DPI to use for rendering PDF pages")
+
+    # OCR behavior
+    p.add_argument("-l", "--languages", nargs="+", default=["vi", "en"], help="Language codes for OCR")
+    p.add_argument("--beamsearch", action="store_true", help="Enable beam search for OCR backends that support it")
     p.add_argument(
         "--pdf-engine",
         type=str,
@@ -231,7 +336,7 @@ def _build_run_parser(subparsers: argparse._SubParsersAction | argparse.Argument
         choices=["pymupdf"],
         help="Underlying engine for PDF processing",
     )
-    p.add_argument("--export-txt", action="store_true", help="Also export a discrete txt per document")
+    p.add_argument("--export-txt", action="store_true", help="Also export a discrete .txt next to each source file")
     p.add_argument(
         "--ocr-backend",
         type=str,
@@ -242,11 +347,55 @@ def _build_run_parser(subparsers: argparse._SubParsersAction | argparse.Argument
         "--ocr-backend-kwargs",
         type=str,
         default="{}",
-        help='JSON dict for backend init kwargs, e.g. {"languages": ["vi","en"], "gpu": true}',
+        help=('Backend init kwargs as JSON or key=value pairs, e.g. '
+              '\'{"languages":["vi","en"],"gpu":true}\'  or  languages=vi,en;gpu=true'),
     )
+
+    # Performance logging (separate group keeps --help clean)
     perf_group = p.add_argument_group("Performance logging")
     perf_group.add_argument("--log-performance", action="store_true", help="Enable performance logging to a file")
     perf_group.add_argument("--performance-log-path", type=Path, help="Path for the performance log JSONL file")
+
+    # NEW: Caching & resume
+    cache_group = p.add_argument_group("Caching & resume")
+    # use-cache / no-cache
+    mx_use = cache_group.add_mutually_exclusive_group()
+    mx_use.add_argument(
+        "--use-cache",
+        dest="use_cache",
+        action="store_true",
+        help="Enable page/text and render cache for fast resume (default).",
+    )
+    mx_use.add_argument(
+        "--no-cache",
+        dest="use_cache",
+        action="store_false",
+        help="Disable caching; always render and OCR pages again.",
+    )
+    p.set_defaults(use_cache=True)
+
+    # keep-render-cache / clean-render-cache
+    mx_render = cache_group.add_mutually_exclusive_group()
+    mx_render.add_argument(
+        "--keep-render-cache",
+        dest="keep_render_cache",
+        action="store_true",
+        help="Keep rendered PNGs on disk for faster resume (default).",
+    )
+    mx_render.add_argument(
+        "--clean-render-cache",
+        dest="keep_render_cache",
+        action="store_false",
+        help="Delete rendered PNGs after OCR to save disk space (TXT cache still kept).",
+    )
+    p.set_defaults(keep_render_cache=True)
+
+    cache_group.add_argument(
+        "--cache-version",
+        default="v1",
+        help="Version string for cache invalidation (bump when render params change).",
+    )
+
     return p
 
 
@@ -318,37 +467,49 @@ def _launch_webui_from_cli(args: argparse.Namespace) -> None:
 def _run_from_cli(args: argparse.Namespace) -> None:
     ctx = mp.get_context("spawn")
     log_queue = ctx.Manager().Queue(-1)
-    # Derive a logfile next to the output JSONL (optional but handy)
-    log_file = None
+
+    # >>> Normalize output path & backend early
+    try:
+        args.output_path = _normalize_output_path(Path(args.output_path))
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise SystemExit(f"Failed to normalize --output-path: {e}")
+
+    # Backend alias support
+    if getattr(args, "ocr_backend", None):
+        args.ocr_backend = _normalize_backend_alias(args.ocr_backend)
+        _preflight_backend_import(args.ocr_backend)
+
+    # Derive a logfile next to the output JSONL
     try:
         if args.output_path:
             base_name = Path(args.output_path).with_suffix(".log").name
         else:
             base_name = f"paraocr_{time.strftime('%Y%m%d-%H%M%S')}.log"
-        log_file = Path.cwd() / base_name
+        log_file = Path(args.output_path).parent / base_name
     except Exception:
         log_file = Path.cwd() / f"paraocr_{time.strftime('%Y%m%d-%H%M%S')}.log"
 
     listener = setup_logging(
         log_queue=log_queue,
-        text_ui_queue=None,       # no Gradio here
-        event_ui_queue=None,      # no progress events to UI
+        text_ui_queue=None,
+        event_ui_queue=None,
         level=logging.INFO,
         file_path=log_file,
     )
     listener.start()
 
     try:
-        # Normalize backend kwargs
+        # (existing backend kwargs parsing remains the same)
         backend_kwargs = _parse_backend_kwargs(args.ocr_backend_kwargs) \
             if isinstance(args.ocr_backend_kwargs, str) \
             else (dict(args.ocr_backend_kwargs) if args.ocr_backend_kwargs else {})
         backend_kwargs = _normalize_common_backend_kwargs(backend_kwargs)
 
-        # Build config dict and prune None so dataclass defaults apply
         cfg_dict = {
             "input_dir": args.input_dir,
-            "output_path": args.output_path,
+            "output_path": args.output_path,            # <-- now guaranteed to be a file
             "error_log_path": args.error_log_path,
             "languages": args.languages,
             "ignore_keywords": args.ignore_keywords or [],
@@ -360,27 +521,26 @@ def _run_from_cli(args: argparse.Namespace) -> None:
             "pdf_engine": args.pdf_engine,
             "ocr_backend": args.ocr_backend,
             "ocr_backend_kwargs": backend_kwargs,
-            # optional tuning fields
             "num_workers": args.workers,
             "num_gpu_workers": args.gpu_workers,
             "gpu_batch_size": args.gpu_batch_size,
             "dpi": args.dpi,
-            # >>> IMPORTANT: give the pipeline the same process-safe queue <<<
+            "use_cache": args.use_cache,
+            "keep_render_cache": args.keep_render_cache,
+            "cache_version": args.cache_version,
             "log_queue": log_queue,
         }
         cfg_dict = {k: v for k, v in cfg_dict.items() if v is not None}
-
         config = OCRConfig.from_dict(cfg_dict)
 
-        # Run the non-UI pipeline
         run_pipeline(config)
 
     finally:
-        # Always stop the listener so the process can exit cleanly
         try:
             listener.stop()
         except Exception:
             pass
+
 
 
 def main(argv: Optional[List[str]] = None):

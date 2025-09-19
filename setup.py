@@ -6,7 +6,7 @@ long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="paraocr",
-    version="2.0.1",
+    version="2.2.0",
     package_dir={"": "src"},
     packages=find_packages(where="src", include=["paraocr", "paraocr.*"]),
     author="Phuoc Nguyen",

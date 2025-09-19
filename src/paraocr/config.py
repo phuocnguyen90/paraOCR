@@ -41,6 +41,11 @@ class OCRConfig:
     log_performance: bool = False
     performance_log_path: Path = Path("paraOCR_performance_log.jsonl")   
 
+
+    use_cache: bool = True                # enable page/txt + render png cache
+    keep_render_cache: bool = True        # keep rendered PNGs after OCR (faster resume)
+    cache_version: str = "v1"             # bump to invalidate old cache entries
+
     process_tables: bool = False
     process_images: bool = False
 
