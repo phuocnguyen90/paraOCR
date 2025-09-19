@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
+import sys
 import time
 from pathlib import Path
 from typing import List, Dict, Any
@@ -29,6 +31,22 @@ from .gpu_worker import initialize_gpu_worker, process_gpu_batch
 from .logger import configure_worker_logging
 
 logger = logging.getLogger("paraocr")
+
+SHUTDOWN_REQUESTED = False
+
+def _graceful_shutdown_handler(signum, frame):
+    """
+    Signal handler that sets the global shutdown flag.
+    Avoids complex logic; just sets a flag for the main loop to handle.
+    """
+    global SHUTDOWN_REQUESTED
+    if not SHUTDOWN_REQUESTED:
+        logger.warning("Shutdown signal received! Finishing current tasks before exiting.")
+        SHUTDOWN_REQUESTED = True
+    else:
+        logger.error("Second shutdown signal received! Forcing an immediate exit.")
+        sys.exit(1)
+
 
 class PerformanceTracker:
     def __init__(self):
@@ -213,6 +231,13 @@ class OCRRunner:
 
     def run(self, tasks: List[OCRTask]):
         logger.info("Run started")
+
+        # Catches Ctrl+C (SIGINT) and termination signals (e.g., from `kill`)
+        signal.signal(signal.SIGINT, _graceful_shutdown_handler)
+        signal.signal(signal.SIGTERM, _graceful_shutdown_handler)
+
+        # Configure logging for workers
+        
         perf_tracker = PerformanceTracker()
         file_start_times: Dict[str, float] = {}
         ctx = mp.get_context("spawn")
@@ -409,6 +434,9 @@ class OCRRunner:
                 return
                     
 
+            if SHUTDOWN_REQUESTED:
+                logger.info("Shutdown requested before processing started. Exiting.")
+                return
             # STAGE 3: routing
 
 
@@ -468,31 +496,44 @@ class OCRRunner:
                 return # Exit early as there is no parallel work to do
 
             # STAGE 4: parallel processing
-            logger.info(
-                "Starting parallel processing with %s GPU workers",
-                self.config.num_gpu_workers,
-            )
-            logger.progress("render start", extra={"phase": "render", "pct": 30})
-            rendered = 0
-            total_render = len(text_render_queue)
-            final_backend_kwargs = OCRRunner._build_backend_kwargs(self.config)
+            render_pool = None
+            gpu_pool = None
+            try:
+                    
+                logger.info(
+                    "Starting parallel processing with %s GPU workers",
+                    self.config.num_gpu_workers,
+                )
+                final_backend_kwargs = OCRRunner._build_backend_kwargs(self.config)
+                # Initialize pools
+                render_pool = ctx.Pool(
+                    processes=self.config.num_workers,
+                    initializer=configure_worker_logging,
+                    initargs=(self.config.log_queue,)
+                )
+                gpu_pool = ctx.Pool(
+                    processes=self.config.num_gpu_workers,
+                    initializer=initialize_gpu_worker,
+                    initargs=(self.config.log_queue, self.config.ocr_backend, final_backend_kwargs)
+                )
 
-            # This is the key: two separate, dedicated pools that run concurrently.
-            with ctx.Pool(processes=self.config.num_workers, initializer=configure_worker_logging,initargs=(self.config.log_queue,)) as render_pool, \
-                 ctx.Pool(processes=self.config.num_gpu_workers, 
-                      initializer=initialize_gpu_worker, 
-                      initargs=(self.config.log_queue,self.config.ocr_backend, final_backend_kwargs)) as gpu_pool:
-
-                # --- STAGE 4a: Submit CPU Rendering Jobs ---
-                # The main process streams rendering tasks to the render_pool.
                 render_iterator = render_pool.imap_unordered(worker_render_text_page, text_render_queue, chunksize=16)
-                
-                async_gpu_results = []
-                pending = []  # queue of (AsyncResult job, meta_batch)
-                image_batch_buffer = []; meta_batch_buffer = []
 
-                total_render = len(text_render_queue)
-                pbar_render = tqdm(render_iterator, total=total_render, desc="Rendering Pages (CPU)")
+                pending = []
+                image_batch_buffer = []; meta_batch_buffer = []
+                pbar_render = tqdm(render_iterator, total=len(text_render_queue), desc="Rendering Pages (CPU)")
+
+                for result in pbar_render:
+                    # --- NEW: Check for shutdown request while submitting tasks ---
+                    if SHUTDOWN_REQUESTED:
+                        logger.info("Stopping submission of new rendering tasks.")
+                        break # Exit the loop, no more tasks will be submitted.
+
+                    if result.get("error"):
+                        self._log_error(result["source_path"], result["error"])
+                        continue
+
+                image_batch_buffer = []; meta_batch_buffer = []
 
                 for result in pbar_render:
                     if result.get("error"):
@@ -517,12 +558,12 @@ class OCRRunner:
                         # We no longer call _drain_ready here. Draining will be handled later.
 
                 # final partial batch
-                if image_batch_buffer:
+                if image_batch_buffer and not SHUTDOWN_REQUESTED:
                     job = gpu_pool.apply_async(process_gpu_batch, (image_batch_buffer,))
                     pending.append((job, meta_batch_buffer))
                 
 
-                logger.info("Waiting for remaining GPU batches...")
+                logger.info("Waiting for %d in-flight GPU batches to complete...", len(pending))
                 logger.progress("aggregate start", extra={"phase": "aggregate", "pct": 85})
                 # drain all remaining in order of completion
                 total_batches = len(pending)
@@ -533,6 +574,8 @@ class OCRRunner:
 
                         if not ready_indices:
                             time.sleep(0.05)  # Avoid busy-waiting
+                            if SHUTDOWN_REQUESTED and not any(not job.ready() for job, _ in pending):
+                                break
                             continue
 
                         # Process all ready jobs, iterating backwards to safely pop from the list
@@ -567,21 +610,17 @@ class OCRRunner:
                                 for meta in meta_data:
                                     self._log_error(meta["source_path"], f"GPU batch failed: {e}")
                                     progress_tracker[meta["source_path"]][meta["page_num"]] = {"type": "error", "data": f"GPU batch failed: {e}"}
-                            finally:
-                                pbar_gpu.update(1)
-                                affected_files = {meta["source_path"] for meta in meta_data}
-                                for path_str in affected_files:
-                                    if path_str in completed_files:
-                                        continue
-                                    
-                                    current_pages = progress_tracker[path_str]
-                                    if all(p is not None for p in current_pages):
-                                        logger.info("File %s complete. Writing to output.", path_str)
-                                        self._write_single_file_result(
-                                            path_str, list(current_pages), outfile, file_start_times, perf_tracker
-                                        )
-                                        completed_files.add(path_str)
-                
+            finally:
+                logger.info("Starting final cleanup of worker pools.")
+                if render_pool:
+                    render_pool.close() # Prevents any new tasks from being submitted
+                    render_pool.join()  # Waits for worker processes to exit
+                    logger.info("Render pool has been shut down.")
+                if gpu_pool:
+                    gpu_pool.close()
+                    gpu_pool.join()
+                    logger.info("GPU pool has been shut down.")
+                    
             # STAGE 5: final write
             logger.info("Aggregating and writing final results")
             logger.progress("final write", extra={"phase": "final", "pct": 95})
