@@ -1,7 +1,3 @@
-here’s a drop-in README section you can paste in.
-
----
-
 # Benchmarks
 
 **Dataset:** `tests/data` (10 files ≈ 60 pages)

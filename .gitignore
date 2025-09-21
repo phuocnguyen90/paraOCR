@@ -188,3 +188,88 @@ vanilla_bench.py
 paraOCR_performance_log.jsonl
 powerocr_performance_log.jsonl
 temp.py
+tests/test_data/data/67f491b63f7bb4e5ad33812f_phu-luc-03.pdf
+tests/test_data/data/67f491b63f7bb4e5ad338123_bds-kavi-don-bo-sung-yeu-cau-khoi-kien-03-4-25.pdf
+tests/test_data/data/67f491b63f7bb4e5ad338125_bds-kavi-thong-bao-nop-tien-tam-ung-an-phi-04-4-25.pdf
+tests/test_data/data/67f491b63f7bb4e5ad338127_bds-kavi-bang-ke-phi-dich-vu-du-an-ruby-20250404-0001.pdf
+tests/test_data/data/67f491b63f7bb4e5ad338129_bds-kavi-bien-lai-thu-tam-ung-an-phi-le-phi-toa-an-04-4-25.pdf
+tests/test_data/data/67f491b63f7bb4e5ad338131_hop-dong-kem-pl-du-an-kcp.pdf
+tests/test_data/data/67f491b63f7bb4e5ad338133_phu-luc-02.pdf
+tests/test_data/data/67f491b63f7bb4e5ad338135_thong-bao-chuyen-don-khoi-kien.pdf
+tests/test_data/data/67f491bf3f7bb4e5ad33962a_tb-thu-ly.jpg
+tests/test_data/data/67f491bf3f7bb4e5ad339635_gpkd-kcp.pdf
+tests/test_data/data2/giao_trinh_ls_1-100.pdf
+tests/test_data/data4/67f491b53f7bb4e5ad335cac_trieu-tap-trang-toa-quan-1.pdf
+tests/test_data/data4/67f491f63f7bb4e5ad340ddd_phieu-gui-buu-dien-hntd-cao-thi-thuy-trang.pdf
+tests/test_data/data4/67f491f63f7bb4e5ad3409f0_phieu-gui-buu-dien-ca-q1-ca-tp-dkn-toa-tp.pdf
+tests/test_data/data4/67f491f73f7bb4e5ad340dec_ho-so-chi-trang.pdf
+tests/test_data/nick/2014_0217_140217.jpg
+tests/test_data/nick/2014_0217_140217.txt
+tests/test_data/nick/2014_0217_140347.jpg
+tests/test_data/nick/2014_0217_140347.txt
+tests/test_data/nick/2014_0217_155144.jpg
+tests/test_data/nick/2014_0217_155144.txt
+tests/test_data/nick/2014_0218_075915.jpg
+tests/test_data/nick/2014_0218_075915.txt
+tests/test_data/nick/2014_0218_080045.jpg
+tests/test_data/nick/2014_0218_080045.txt
+tests/test_data/nick/2016_0318_082935_resized.jpg
+tests/test_data/nick/2016_0318_082935_resized.txt
+tests/test_data/nick/2016_0318_083131_resized.jpg
+tests/test_data/nick/2016_0318_083131_resized.txt
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG__8.pdf
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG__8.txt
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG_.pdf
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG_.txt
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG_nb.pdf
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG_nb.txt
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG.pdf
+tests/test_data/nick/2025. GCN SỞ HỮU CỔ PHẦN, SỔ ĐK CỔ ĐÔNG.txt
+tests/test_data/nick/20170104 shares allocation.pdf
+tests/test_data/nick/BCTC 2014.pdf
+tests/test_data/nick/BCTC 2014.txt
+tests/test_data/nick/BCTC 2015.pdf
+tests/test_data/nick/BCTC 2015.txt
+tests/test_data/nick/BCTC 2016.pdf
+tests/test_data/nick/BCTC 2016.txt
+tests/test_data/nick/Bien nhận tiền môi giới bán tòa nhà.jpg
+tests/test_data/nick/Bien nhận tiền môi giới bán tòa nhà.txt
+tests/test_data/nick/Đề nghị thanh toán công chứng.jpg
+tests/test_data/nick/Đề nghị thanh toán công chứng.txt
+tests/test_data/nick/Giấy nộp tiền thuế GTGT 23062025 - thue chuyen nhuong.pdf
+tests/test_data/nick/Giấy nộp tiền thuế TNDN 23062025 - thue chuyen nhuong.pdf
+tests/test_data/nick/Hóa đơn thẩm định.pdf
+tests/test_data/nick/HOP DONG TRICH THUONG_CN TOA NHA.pdf
+tests/test_data/nick/HOP DONG TRICH THUONG_CN TOA NHA.txt
+tests/test_data/nick/IMG-20250610-WA0002.jpg
+tests/test_data/nick/IMG-20250610-WA0002.txt
+tests/test_data/nick/IMG-20250610-WA0003.jpg
+tests/test_data/nick/IMG-20250610-WA0003.txt
+tests/test_data/nick/IMG-20250610-WA0004.jpg
+tests/test_data/nick/IMG-20250610-WA0004.txt
+tests/test_data/nick/IMG-20250610-WA0005.jpg
+tests/test_data/nick/IMG-20250610-WA0005.txt
+tests/test_data/nick/img001.JPG
+tests/test_data/nick/img001.txt
+tests/test_data/nick/img002.JPG
+tests/test_data/nick/img002.txt
+tests/test_data/nick/img003.JPG
+tests/test_data/nick/img003.txt
+tests/test_data/nick/Nộp thuế trước bạ lần 1.jpg
+tests/test_data/nick/Nộp thuế trước bạ lần 1.txt
+tests/test_data/nick/Phí công chứng.jpg
+tests/test_data/nick/Phí công chứng.txt
+tests/test_data/nick/Share certificate .jpg
+tests/test_data/nick/Share certificate .txt
+tests/test_data/nick/Share certificate from Dien.jpg
+tests/test_data/nick/Share certificate from Dien.txt
+tests/test_data/nick/Thông báo nộp thuế.jpg
+tests/test_data/nick/Thông báo nộp thuế.txt
+tests/test_data/nick/Thuế tncn và thuế trước bạ đợt 2.pdf
+tests/test_data/nick/Thuế tncn và thuế trước bạ đợt 2.txt
+tests/test_data/nick/Uỷ nhiệm chi chuyển khoản 1 tháng lương-.pdf
+tests/test_data/nick/Uỷ nhiệm chi chuyển khoản 1 tháng lương-.txt
+tests/test_data/nick/Viet-Uc Share Certificate 005.pdf
+tests/test_data/nick/Viet-Uc Share Certificate 005.txt
+tests/test_data/nick/VIETUC-MOM-20140217_0.pdf
+tests/test_data/nick/VIETUC-MOM-20140217_0.txt
